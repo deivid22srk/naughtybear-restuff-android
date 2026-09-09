@@ -61,7 +61,12 @@ if [[ ! -f "$SHADERC_INSTALL/lib/libshaderc.a" ]]; then
         -DENABLE_GLSLANG_BINARIES=OFF
     cmake --build "$SHADERC_BUILD" --target shaderc --parallel "$(nproc)"
     mkdir -p "$SHADERC_INSTALL/lib" "$SHADERC_INSTALL/include"
-    cp -r "$SHADERC_SRC/include/shaderc" "$SHADERC_INSTALL/include/"
+    # Layout antigo: include/shaderc/ na raiz; v2026.3+: libshaderc/include/shaderc/
+    SHADERC_INC_DIR="$SHADERC_SRC/include"
+    if [[ ! -d "$SHADERC_INC_DIR/shaderc" ]]; then
+        SHADERC_INC_DIR="$SHADERC_SRC/libshaderc/include"
+    fi
+    cp -r "$SHADERC_INC_DIR/shaderc" "$SHADERC_INSTALL/include/"
     find "$SHADERC_BUILD" -name "*.a" -exec cp {} "$SHADERC_INSTALL/lib/" \;
 else
     echo "shaderc Android já construído — pulando"
