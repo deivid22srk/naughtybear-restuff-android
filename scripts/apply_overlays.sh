@@ -43,7 +43,8 @@ echo "Aplicando overlays do port…"
 for rel in \
     src/ui/window_sdl.cpp \
     src/ui/CMakeLists.txt \
-    cmake/rex_pch.cmake
+    cmake/rex_pch.cmake \
+    include/rex/string/numeric.h
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
