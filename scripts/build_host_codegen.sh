@@ -27,10 +27,13 @@ fi
 ls -la "$XEX_PATH"
 
 echo "== [2/3] Build do CLI rexglue (host) =="
+HOST_ARCH_FLAGS="-march=x86-64-v2"  # mesmo piso do preset linux-base do SDK
 if [[ "${SKIP_CLI_BUILD:-0}" != "1" || ! -d "$BUILD_DIR" ]]; then
     cmake -S "$REXSDK_SRC" -B "$BUILD_DIR" \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS="$HOST_ARCH_FLAGS" \
+        -DCMAKE_CXX_FLAGS="$HOST_ARCH_FLAGS" \
         -DREXGLUE_BUILD_TESTS=OFF \
         -DREXGLUE_ENABLE_TRACY=OFF \
         -DREXGLUE_ENABLE_PERF_COUNTERS=OFF
