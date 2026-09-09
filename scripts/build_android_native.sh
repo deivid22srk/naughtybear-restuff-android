@@ -77,6 +77,9 @@ GLSLC_HOST_DIR="$ROOT/build/glslc-host"
 GLSLC_HOST="$GLSLC_HOST_DIR/glslc"
 if [[ ! -x "$GLSLC_HOST" ]]; then
     echo "== shaderc: glslc do host =="
+    # No v2026.3 o executável é o target 'glslc_exe' (OUTPUT_NAME glslc) e só
+    # existe com SHADERC_ENABLE_EXECUTABLES=ON (SPIRV_SKIP_EXECUTABLES=ON o
+    # desliga — o cache var explícito sobrevive ao if() do shaderc).
     cmake -S "$SHADERC_SRC" -B "$ROOT/build/shaderc-host" \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
@@ -84,10 +87,16 @@ if [[ ! -x "$GLSLC_HOST" ]]; then
         -DSHADERC_SKIP_EXAMPLES=ON \
         -DSHADERC_SKIP_COPYRIGHT_CHECK=ON \
         -DSPIRV_SKIP_EXECUTABLES=ON \
+        -DSHADERC_ENABLE_EXECUTABLES=ON \
         -DENABLE_GLSLANG_BINARIES=ON
-    cmake --build "$ROOT/build/shaderc-host" --target glslc --parallel "$(nproc)"
+    cmake --build "$ROOT/build/shaderc-host" --target glslc_exe --parallel "$(nproc)"
     mkdir -p "$GLSLC_HOST_DIR"
-    find "$ROOT/build/shaderc-host" -name "glslc" -type f -exec cp {} "$GLSLC_HOST_DIR/" \;
+    GLSLC_BIN=$(find "$ROOT/build/shaderc-host" -type f -name "glslc" -perm -u+x 2>/dev/null | head -1)
+    if [[ -z "$GLSLC_BIN" ]]; then
+        echo "ERRO: executável glslc não encontrado após o build host" >&2
+        exit 1
+    fi
+    cp "$GLSLC_BIN" "$GLSLC_HOST_DIR/"
     chmod +x "$GLSLC_HOST"
 fi
 
