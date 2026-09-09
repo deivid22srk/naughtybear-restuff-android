@@ -103,9 +103,15 @@ cmake --build "$BUILD_OUT" --parallel "$(nproc)"
 
 # --- [3] Empacotar jniLibs -------------------------------------------------
 cp "$BUILD_OUT/librestuff.so" "$JNILIBS_DIR/"
-# O SDK constrói rexruntime como SHARED — entra no APK também.
-if [[ -f "$BUILD_OUT/librexruntime.so" ]]; then
-    cp "$BUILD_OUT/librexruntime.so" "$JNILIBS_DIR/"
+# O SDK constrói rexruntime como SHARED e despeja binários em
+# rexglue-sdk/out/<REX_PLATFORM>/ (no NDK a detecção do SDK não tem branch
+# Android → vira "linux-arm64"). Buscar nos dois lugares:
+REXRUNTIME=$(find "$REXSDK_SRC/out" "$BUILD_OUT" -name "librexruntime.so" -type f 2>/dev/null | head -1)
+if [[ -n "$REXRUNTIME" ]]; then
+    cp "$REXRUNTIME" "$JNILIBS_DIR/"
+    echo "  librexruntime: $REXRUNTIME"
+else
+    echo "AVISO: librexruntime.so não encontrada" >&2
 fi
 # STL compartilhada: OBRIGATÓRIA com c++_shared (rexruntime SHARED e
 # librestuff passam std::string/vector entre si — duas libc++ estáticas
