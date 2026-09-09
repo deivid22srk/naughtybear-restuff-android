@@ -23,14 +23,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install host toolchain (cmake, ninja, clang)
+      - name: Install host toolchain (cmake, ninja, clang 19)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build clang curl git \
+          sudo apt-get install -y --no-install-recommends cmake ninja-build curl git \
             libx11-xcb-dev libx11-dev libwayland-dev wayland-protocols libxkbcommon-dev \
             libasound2-dev libpulse-dev
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
+          # clang 19 é OBRIGATÓRIO com as headers libstdc++ 14 do ubuntu-24.04:
+          # <expected> é gated por __cpp_concepts >= 202002L e o clang <=18
+          # define 201907L (P2113 só pousou no clang 19) → std::expected vazio.
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 19
+          echo "CC=clang-19" >> "$GITHUB_ENV"
+          echo "CXX=clang++-19" >> "$GITHUB_ENV"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3

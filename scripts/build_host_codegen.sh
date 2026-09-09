@@ -20,17 +20,19 @@ DEFAULT_XEX_URL="${DEFAULT_XEX_URL:-https://github.com/deivid22srk/Naughty-Bear-
 echo "== [0/3] Diagnóstico std::expected (evidência p/ run #5) =="
 TMPD="$(mktemp -d)"
 printf '#include <expected>\n#include <cstdio>\nint main(){ std::expected<int,int> e = 42; return e.value(); }\n' > "$TMPD/t.cpp"
-if clang++ -std=c++23 -fsyntax-only "$TMPD/t.cpp" 2>"$TMPD/err.txt"; then
+PROBE_CC="${CXX:-clang++}"
+echo "  [probe] usando: $PROBE_CC ($($PROBE_CC --version | head -1))"
+if $PROBE_CC -std=c++23 -fsyntax-only "$TMPD/t.cpp" 2>"$TMPD/err.txt"; then
     echo "  [probe] std::expected OK sem PCH"
 else
     echo "  [probe] std::expected FALHOU sem PCH:"; cat "$TMPD/err.txt"
 fi
 printf '#include <expected>\n' > "$TMPD/h.cpp"
 echo "  [probe] resolução de <expected>:"
-clang++ -std=c++23 -H -fsyntax-only "$TMPD/h.cpp" 2>&1 | grep -E "^\." | head -2 || true
+$PROBE_CC -std=c++23 -H -fsyntax-only "$TMPD/h.cpp" 2>&1 | grep -E "^\." | head -2 || true
 echo "  [probe] macros relevantes:"
 printf '#include <version>\n' > "$TMPD/v.cpp"
-clang++ -std=c++23 -dM -E "$TMPD/v.cpp" 2>/dev/null | grep -E "__cplusplus|__cpp_lib_expected|_GLIBCXX_RELEASE" || true
+$PROBE_CC -std=c++23 -dM -E "$TMPD/v.cpp" 2>/dev/null | grep -E "__cplusplus|__cpp_concepts|__cpp_lib_expected|_GLIBCXX_RELEASE" || true
 echo "  [probe] GCC installs: $(ls /usr/lib/gcc/x86_64-linux-gnu/ 2>/dev/null | tr '\n' ' ')"
 rm -rf "$TMPD"
 
