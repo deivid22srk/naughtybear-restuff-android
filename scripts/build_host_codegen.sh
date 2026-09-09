@@ -86,5 +86,5 @@ if [[ -f "$RESTUFF_SRC/generated/default/sources.cmake" && "${FORCE_CODEGEN:-0}"
 else
     "$REXGLUE_CLI" codegen "$RESTUFF_SRC/restuff_manifest.toml"
 fi
-ls "$RESTUFF_SRC/generated/default/" | head -8
+ls "$RESTUFF_SRC/generated/default/" | head -8 || true
 echo "Codegen concluído."
