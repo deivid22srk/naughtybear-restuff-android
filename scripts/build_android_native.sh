@@ -52,7 +52,7 @@ if [[ ! -f "$SHADERC_INSTALL/lib/libshaderc.a" ]]; then
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
         -DANDROID_ABI="$ABI" \
         -DANDROID_PLATFORM="android-$API" \
-        -DANDROID_STL=c++_static \
+        -DANDROID_STL=c++_shared \
         -DCMAKE_BUILD_TYPE=Release \
         -DSHADERC_SKIP_TESTS=ON \
         -DSHADERC_SKIP_EXAMPLES=ON \
@@ -93,7 +93,7 @@ cmake -S "$ROOT/native" -B "$BUILD_OUT" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
     -DANDROID_ABI="$ABI" \
     -DANDROID_PLATFORM="android-$API" \
-    -DANDROID_STL=c++_static \
+    -DANDROID_STL=c++_shared \
     -DCMAKE_BUILD_TYPE="${CONFIGURATION:-Release}" \
     -DRESTUFF_SOURCE_DIR="$RESTUFF_SRC" \
     -DREXSDK_SOURCE_DIR="$REXSDK_SRC" \
@@ -106,6 +106,16 @@ cp "$BUILD_OUT/librestuff.so" "$JNILIBS_DIR/"
 # O SDK constrói rexruntime como SHARED — entra no APK também.
 if [[ -f "$BUILD_OUT/librexruntime.so" ]]; then
     cp "$BUILD_OUT/librexruntime.so" "$JNILIBS_DIR/"
+fi
+# STL compartilhada: OBRIGATÓRIA com c++_shared (rexruntime SHARED e
+# librestuff passam std::string/vector entre si — duas libc++ estáticas
+# num mesmo processo = heaps duplicados = crash em tempo de execução).
+LIBCXX_SHARED=$(find "$NDK_DIR/toolchains/llvm/prebuilt" \
+    -path "*/sysroot/usr/lib/$ABI/libc++_shared.so" 2>/dev/null | head -1)
+if [[ -n "$LIBCXX_SHARED" ]]; then
+    cp "$LIBCXX_SHARED" "$JNILIBS_DIR/"
+else
+    echo "AVISO: libc++_shared.so não encontrada no NDK" >&2
 fi
 ls -la "$JNILIBS_DIR/"
 echo "Build nativo Android concluído."

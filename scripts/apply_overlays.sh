@@ -42,7 +42,8 @@ echo "Aplicando overlays do port…"
 # --- rexglue-sdk: substituições ------------------------------------------
 for rel in \
     src/ui/window_sdl.cpp \
-    src/ui/CMakeLists.txt
+    src/ui/CMakeLists.txt \
+    cmake/rex_pch.cmake
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done

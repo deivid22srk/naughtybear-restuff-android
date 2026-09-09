@@ -17,6 +17,23 @@ REXSDK_SRC="${REXSDK_SRC:-$ROOT/rexglue-sdk}"
 BUILD_DIR="$ROOT/build/host-codegen"
 DEFAULT_XEX_URL="${DEFAULT_XEX_URL:-https://github.com/deivid22srk/Naughty-Bear-archive/releases/download/Archive/Default.xex}"
 
+echo "== [0/3] Diagnóstico std::expected (evidência p/ run #5) =="
+TMPD="$(mktemp -d)"
+printf '#include <expected>\n#include <cstdio>\nint main(){ std::expected<int,int> e = 42; return e.value(); }\n' > "$TMPD/t.cpp"
+if clang++ -std=c++23 -fsyntax-only "$TMPD/t.cpp" 2>"$TMPD/err.txt"; then
+    echo "  [probe] std::expected OK sem PCH"
+else
+    echo "  [probe] std::expected FALHOU sem PCH:"; cat "$TMPD/err.txt"
+fi
+printf '#include <expected>\n' > "$TMPD/h.cpp"
+echo "  [probe] resolução de <expected>:"
+clang++ -std=c++23 -H -fsyntax-only "$TMPD/h.cpp" 2>&1 | grep -E "^\." | head -2 || true
+echo "  [probe] macros relevantes:"
+printf '#include <version>\n' > "$TMPD/v.cpp"
+clang++ -std=c++23 -dM -E "$TMPD/v.cpp" 2>/dev/null | grep -E "__cplusplus|__cpp_lib_expected|_GLIBCXX_RELEASE" || true
+echo "  [probe] GCC installs: $(ls /usr/lib/gcc/x86_64-linux-gnu/ 2>/dev/null | tr '\n' ' ')"
+rm -rf "$TMPD"
+
 echo "== [1/3] Default.xex =="
 XEX_PATH="$RESTUFF_SRC/assets/Default.xex"
 if [[ ! -f "$XEX_PATH" ]]; then
@@ -32,6 +49,8 @@ if [[ "${SKIP_CLI_BUILD:-0}" != "1" || ! -d "$BUILD_DIR" ]]; then
     cmake -S "$REXSDK_SRC" -B "$BUILD_DIR" \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_STANDARD=11 \
+        -DCMAKE_CXX_STANDARD=23 \
         -DCMAKE_C_FLAGS="$HOST_ARCH_FLAGS" \
         -DCMAKE_CXX_FLAGS="$HOST_ARCH_FLAGS" \
         -DREXGLUE_BUILD_TESTS=OFF \
