@@ -26,7 +26,9 @@ jobs:
       - name: Install host toolchain (cmake, ninja, clang)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build clang curl git
+          sudo apt-get install -y --no-install-recommends cmake ninja-build clang curl git \
+            libx11-xcb-dev libx11-dev libwayland-dev wayland-protocols libxkbcommon-dev \
+            libasound2-dev libpulse-dev
           echo "CC=clang" >> "$GITHUB_ENV"
           echo "CXX=clang++" >> "$GITHUB_ENV"
 
