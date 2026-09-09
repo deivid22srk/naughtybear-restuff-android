@@ -1,0 +1,7 @@
+[submodule "restuff"]
+	path = restuff
+	url = https://github.com/MaxDeadBear/NaughtyBear_ReStuff.git
+	branch = main
+[submodule "rexglue-sdk"]
+	path = rexglue-sdk
+	url = https://github.com/rexglue/rexglue-sdk.git

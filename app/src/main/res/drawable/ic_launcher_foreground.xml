@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Foreground do ícone adaptativo: mesma marca genérica, escala segura 66dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="2.5"
+        android:scaleY="2.5"
+        android:translateX="22.8"
+        android:translateY="22.8">
+        <path
+            android:pathData="M12,2.6 L20,7.1 L20,16.9 L12,21.4 L4,16.9 L4,7.1 Z"
+            android:strokeColor="#C9A15A"
+            android:strokeWidth="1.1"
+            android:fillColor="#00000000" />
+        <path
+            android:pathData="M10,8.4 L16.2,12 L10,15.6 Z"
+            android:fillColor="#E8C583" />
+    </group>
+</vector>

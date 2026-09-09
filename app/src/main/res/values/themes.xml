@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Tema base do template.
+        O visual real (cores, glassmorphism, partículas) é 100% definido pelo
+        Jetpack Compose a partir de PortBrandingConfig.kt. Aqui apenas garantimos
+        uma janela escura e edge-to-edge para evitar flash branco no cold start.
+    -->
+    <style name="Theme.PortScreen" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

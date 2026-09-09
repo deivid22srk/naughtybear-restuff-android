@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PortScreen">
+
+        <!-- Launcher / tela de seleção de dados (template port-screen) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:theme="@style/Theme.PortScreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            GameActivity: hospeda a janela SDL3 (org.libsdl.app.SDLActivity) que
+            roda o binário nativo do recomp (librestuff.so). Travada em landscape
+            (o jogo é 16:9) e sem recreação em resize/teclado — o ciclo SDL não
+            deve ser destruído por configChanges.
+        -->
+        <activity
+            android:name=".game.GameActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|navigation"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.PortScreen" />
+    </application>
+
+</manifest>

@@ -1,0 +1,21 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+app/build
+.kotlin
+
+# Builds nativos do port
+build/
+app/src/main/jniLibs/
+
+# Assets do jogo — NUNCA versionados (usuário fornece)
+restuff/assets/*.xex
+restuff/generated/
+thirdparty-src/
