@@ -58,6 +58,11 @@ Sint16 g_lx = 0, g_ly = 0, g_rx = 0, g_ry = 0;
 Sint16 g_lt = 0, g_rt = 0;  // 0..32767 (normalização do gamepad SDL)
 
 void AttachVirtualGamepad() {
+  // O overlay é anexado antes do input driver do SDK — garante o subsistema.
+  if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+    ALOG("SDL_InitSubSystem(GAMEPAD) failed: %s", SDL_GetError());
+    return;
+  }
   SDL_VirtualJoystickDesc desc;
   SDL_INIT_INTERFACE(&desc);
   desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
