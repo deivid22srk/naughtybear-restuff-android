@@ -62,11 +62,29 @@ fi
 cmake --build "$BUILD_DIR" --target rexglue --parallel "$(nproc)"
 
 echo "== [3/3] Codegen =="
+# O SDK redireciona RUNTIME_OUTPUT p/ out/<plataforma>-<arch>/ (não fica em
+# build/host-codegen/src/rexglue). Resolver o binário de forma robusta:
+REXGLUE_CLI=""
+for cand in \
+    "$REXSDK_SRC/out/linux-amd64/rexglue" \
+    "$BUILD_DIR/src/rexglue/rexglue" \
+    "$REXSDK_SRC/out/linux-$(uname -m | sed 's/x86_64/amd64/')/rexglue"
+do
+    if [[ -x "$cand" ]]; then REXGLUE_CLI="$cand"; break; fi
+done
+if [[ -z "$REXGLUE_CLI" ]]; then
+    REXGLUE_CLI=$(find "$REXSDK_SRC/out" "$BUILD_DIR" -type f -name rexglue -perm -u+x 2>/dev/null | head -1)
+fi
+if [[ -z "$REXGLUE_CLI" ]]; then
+    echo "ERRO: binário rexglue não encontrado após o build" >&2
+    exit 1
+fi
+echo "  CLI: $REXGLUE_CLI"
 # Não regenerar se já existe (build Android consome o mesmo output).
 if [[ -f "$RESTUFF_SRC/generated/default/sources.cmake" && "${FORCE_CODEGEN:-0}" != "1" ]]; then
     echo "  codegen já presente — pulando (FORCE_CODEGEN=1 para regenerar)"
 else
-    "$BUILD_DIR/src/rexglue/rexglue" codegen "$RESTUFF_SRC/restuff_manifest.toml"
+    "$REXGLUE_CLI" codegen "$RESTUFF_SRC/restuff_manifest.toml"
 fi
 ls "$RESTUFF_SRC/generated/default/" | head -8
 echo "Codegen concluído."
