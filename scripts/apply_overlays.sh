@@ -46,7 +46,9 @@ for rel in \
     cmake/rex_pch.cmake \
     include/rex/string/numeric.h \
     include/rex/chrono/chrono.h \
-    src/core/timer_queue.cpp
+    src/core/timer_queue.cpp \
+    src/core/CMakeLists.txt \
+    include/rex/thread/fiber.h
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
@@ -54,7 +56,8 @@ done
 # --- rexglue-sdk: arquivos novos (suporte Android) ------------------------
 for rel in \
     include/rex/ui/surface_android.h \
-    src/ui/surface_android.cpp
+    src/ui/surface_android.cpp \
+    src/core/fiber_android.cpp
 do
     addnew "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
