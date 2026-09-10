@@ -107,6 +107,9 @@ target_include_directories(rexcore PRIVATE
 
 if(APPLE)
     target_link_libraries(rexcore PRIVATE pthread)
+elseif(ANDROID)
+    # Port Android: bionic integra pthread e rt na libc — só libdl existe.
+    target_link_libraries(rexcore PRIVATE dl)
 elseif(UNIX)
     target_link_libraries(rexcore PRIVATE pthread rt dl)
 endif()
