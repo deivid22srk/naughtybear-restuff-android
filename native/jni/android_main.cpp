@@ -160,7 +160,12 @@ int main(int argc, char** argv) {
   // que o restuff espera (env do hook de 60fps + env do config path).
   for (int i = 0; i < argc; ++i) {
     const char* a = argv[i];
-    if (strncmp(a, "--fps60=", 8) == 0) {
+    if (strncmp(a, "--app-files-dir=", 16) == 0) {
+      // Pasta de arquivos do app para o SDK: GetExecutableFolder/GetUserFolder
+      // resolvem /proc/self/exe → /system/bin (read-only) no Android, o que
+      // abortava o motor no InitLogging (create_directories /system/bin/logs).
+      setenv("REX_ANDROID_FILES_DIR", a + 16, 1);
+    } else if (strncmp(a, "--fps60=", 8) == 0) {
       if (strcmp(a + 8, "true") == 0) {
         setenv("RESTUFF_FPS60", "1", 1);
       }

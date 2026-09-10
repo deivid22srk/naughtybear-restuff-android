@@ -51,6 +51,7 @@ for rel in \
     include/rex/thread/fiber.h \
     src/core/memory_posix.cpp \
     src/core/threading_posix.cpp \
+    src/core/filesystem_posix.cpp \
     src/system/CMakeLists.txt \
     include/rex/ui/vulkan/device.h \
     include/rex/ui/vulkan/functions/device_1_0.inc \
