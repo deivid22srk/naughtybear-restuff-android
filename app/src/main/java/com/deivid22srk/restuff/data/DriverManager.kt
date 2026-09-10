@@ -282,10 +282,13 @@ object GpuDriverManager {
     fun activeId(context: Context): String? {
         val f = activeFile(context)
         if (!f.isFile) return null
-        f.forEachLine { line ->
-            if (line.startsWith("id=")) return line.substringAfter('=').trim().ifEmpty { null }
+        return f.useLines { lines ->
+            lines.map { it.trim() }
+                .firstOrNull { it.startsWith("id=") }
+                ?.substringAfter('=')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
         }
-        return null
     }
 
     /** Remove um driver importado (e desativa, se era o ativo). */
