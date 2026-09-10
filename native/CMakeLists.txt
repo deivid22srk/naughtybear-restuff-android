@@ -132,9 +132,12 @@ target_compile_options(restuff PRIVATE
     -Wno-unused-variable
 )
 
-# rex::runtime traz rexcore/rexfilesystem/rexui/rexaudio/rexinput (e SDL3).
+# rex::runtime traz rexcore/rexfilesystem/rexaudio/rexinput (e SDL3).
+# rex::ui é OBJECT library (ReXApp, window_sdl, imgui_drawer, overlay dialogs
+# e os objetos imgui) — os objetos entram direto no link do restuff.
 target_link_libraries(restuff PRIVATE
     rex::runtime
+    rex::ui
     android
     log
 )
@@ -144,8 +147,17 @@ target_link_libraries(restuff PRIVATE
 # ----------------------------------------------------------------------
 if(SHADERC_ANDROID_ROOT AND EXISTS "${SHADERC_ANDROID_ROOT}/include/shaderc/shaderc.h")
     target_include_directories(restuff PRIVATE "${SHADERC_ANDROID_ROOT}/include")
-    target_link_directories(restuff PRIVATE "${SHADERC_ANDROID_ROOT}/lib")
-    target_link_libraries(restuff PRIVATE shaderc)
+    file(GLOB RESTUFF_SHADERC_LIBS "${SHADERC_ANDROID_ROOT}/lib/*.a")
+    if(RESTUFF_SHADERC_LIBS)
+        # libshaderc.a depende de shaderc_util/glslang/SPIRV/etc. (cópia de
+        # todos os .a feita pelo build_android_native.sh). Ordem alfabética
+        # não resolve; RESCAN (CMake ≥3.24) = --start-group/--end-group.
+        list(SORT RESTUFF_SHADERC_LIBS)
+        target_link_libraries(restuff PRIVATE
+            "$<LINK_GROUP:RESCAN,${RESTUFF_SHADERC_LIBS}>")
+    else()
+        message(FATAL_ERROR "no static libs in ${SHADERC_ANDROID_ROOT}/lib")
+    endif()
 else()
     message(FATAL_ERROR
         "shaderc for Android not found at SHADERC_ANDROID_ROOT "
