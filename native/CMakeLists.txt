@@ -117,6 +117,10 @@ target_include_directories(restuff PRIVATE
     "${RESTUFF_SOURCE_DIR}/src"
     "${GENERATED_DIR}"
     "${RESTUFF_SHADER_GEN}"
+    # imgui core (rex/ui/style.h e overlays do jogo incluem <imgui.h>)
+    "${REXSDK_SOURCE_DIR}/thirdparty/imgui"
+    # renderdoc_app.h (native_vk.cpp no branch não-WIN32)
+    "${REXSDK_SOURCE_DIR}/include/renderdoc"
 )
 
 # Opções de compilação do código recompilado — mesmo conjunto do

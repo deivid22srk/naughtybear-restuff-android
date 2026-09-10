@@ -70,7 +70,8 @@ done
 # --- NaughtyBear_ReStuff: substituições -----------------------------------
 for rel in \
     src/main.cpp \
-    src/restuff_app.h
+    src/restuff_app.h \
+    src/video_player.h
 do
     replace "$OVERLAY/NaughtyBear_ReStuff/$rel" "$ROOT/restuff/$rel"
 done
