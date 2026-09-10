@@ -87,7 +87,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.deivid22srk.restuff.config.PortBranding
-import com.deivid22srk.restuff.data.GpuDriver
 import com.deivid22srk.restuff.data.GpuDriverManager
 import com.deivid22srk.restuff.settings.AspectRatioOption
 import com.deivid22srk.restuff.settings.FpsLimitOption
