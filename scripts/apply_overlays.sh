@@ -44,7 +44,9 @@ for rel in \
     src/ui/window_sdl.cpp \
     src/ui/CMakeLists.txt \
     cmake/rex_pch.cmake \
-    include/rex/string/numeric.h
+    include/rex/string/numeric.h \
+    include/rex/chrono/chrono.h \
+    src/core/timer_queue.cpp
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
