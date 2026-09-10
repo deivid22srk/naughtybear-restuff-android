@@ -31,6 +31,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/main_android.h>
 #include <rex/memory/utils.h>
 #include <rex/platform.h>
 #include <rex/thread.h>
@@ -92,9 +93,9 @@ void AttachVirtualGamepad() {
 void PushVirtualPadState() {
   if (!g_virtual_joystick) return;
   // Botões: cada bit vira SDL_SetJoystickVirtualButton na MESMA posição.
+  // SDL3: estado de botão é bool (SDL_PRESSED/SDL_RELEASED são SDL2).
   for (int i = 0; i < kVirtualButtons; ++i) {
-    SDL_SetJoystickVirtualButton(g_virtual_joystick, i,
-                                 g_buttons[i] ? SDL_PRESSED : SDL_RELEASED);
+    SDL_SetJoystickVirtualButton(g_virtual_joystick, i, g_buttons[i] != 0);
   }
   // Eixos: ordem SDL_GAMEPAD_AXIS_ (0 LX, 1 LY, 2 RX, 3 RY, 4 LT, 5 RT).
   SDL_SetJoystickVirtualAxis(g_virtual_joystick, SDL_GAMEPAD_AXIS_LEFTX, g_lx);
