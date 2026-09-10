@@ -130,12 +130,30 @@ fi
 # STL compartilhada: OBRIGATÓRIA com c++_shared (rexruntime SHARED e
 # librestuff passam std::string/vector entre si — duas libc++ estáticas
 # num mesmo processo = heaps duplicados = crash em tempo de execução).
-LIBCXX_SHARED=$(find "$NDK_DIR/toolchains/llvm/prebuilt" \
-    -path "*/sysroot/usr/lib/$ABI/libc++_shared.so" 2>/dev/null | head -1)
-if [[ -n "$LIBCXX_SHARED" ]]; then
-    cp "$LIBCXX_SHARED" "$JNILIBS_DIR/"
-else
-    echo "AVISO: libc++_shared.so não encontrada no NDK" >&2
+# ⚠️ O sysroot do NDK usa o TRIPLE LLVM, não o nome do ABI Android:
+#    arm64-v8a → aarch64-linux-android (procurar por "arm64-v8a" falha
+#    silenciosamente e o APK sai sem libc++_shared.so → dlopen crash).
+case "$ABI" in
+    arm64-v8a)   TRIPLE="aarch64-linux-android" ;;
+    armeabi-v7a) TRIPLE="armv7a-linux-androideabi" ;;
+    x86_64)      TRIPLE="x86_64-linux-android" ;;
+    *)           TRIPLE="i686-linux-android" ;;
+esac
+SYSROOT_LIB="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$TRIPLE"
+LIBCXX_SHARED="$SYSROOT_LIB/libc++_shared.so"
+if [[ ! -f "$LIBCXX_SHARED" ]]; then
+    # Fallback: busca genérica pelo triple no prebuilt
+    LIBCXX_SHARED=$(find "$NDK_DIR/toolchains/llvm/prebuilt" \
+        -path "*/sysroot/usr/lib/$TRIPLE/libc++_shared.so" -type f 2>/dev/null | head -1)
 fi
+if [[ -z "$LIBCXX_SHARED" || ! -f "$LIBCXX_SHARED" ]]; then
+    echo "ERRO FATAL: libc++_shared.so não encontrada no NDK (triple: $TRIPLE)" >&2
+    echo "  Sem ela o APK crasha no device: dlopen failed: libc++_shared.so not found" >&2
+    exit 1
+fi
+cp "$LIBCXX_SHARED" "$JNILIBS_DIR/"
+echo "  libc++_shared: $LIBCXX_SHARED"
+# Garantia final: a lib TEM que estar no jniLibs
+test -f "$JNILIBS_DIR/libc++_shared.so" || { echo "ERRO FATAL: cp falhou" >&2; exit 1; }
 ls -la "$JNILIBS_DIR/"
 echo "Build nativo Android concluído."

@@ -12,18 +12,14 @@ android {
         applicationId = "com.deivid22srk.restuff"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        // versionCode acompanha o número do run do GitHub Actions: cada build
+        // nova instala por cima da anterior (in-place upgrade).
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
 
         // ABI única: o recomp (SIMDE/NEON) + SDL3 + Vulkan visam arm64 moderno.
         ndk {
             abiFilters += listOf("arm64-v8a")
-        }
-
-        externalNativeBuild {
-            cmake {
-                arguments += "-DANDROID_STL=c++_static"
-            }
         }
     }
 
@@ -35,10 +31,22 @@ android {
         }
     }
 
+    // Keystore de debug VERSIONADO no repo (keystore/debug.keystore, senha
+    // padrão "android"): todas as builds de CI saem com a MESMA assinatura,
+    // então o usuário atualiza o app por cima sem desinstalar — preserva os
+    // dados e a permissão SAF da pasta do jogo. (Keystore de debug não é
+    // segredo; nunca use esta configuração para publicar na Play Store.)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
-            // No CI, o release é assinado com keystore efêmero gerado no runner
-            // (APK instalável); localmente, sem keystore, cai no debug signing.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

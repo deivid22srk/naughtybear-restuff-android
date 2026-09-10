@@ -61,6 +61,29 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon :app:assembleRelease :app:assembleDebug
 
+      - name: Verify APK native libs (fail-fast se libc++_shared faltar)
+        run: |
+          python3 - <<'EOF'
+          import zipfile, glob, sys
+          apk = glob.glob("app/build/outputs/apk/release/*.apk")[0]
+          print(f"Verificando: {apk}")
+          z = zipfile.ZipFile(apk)
+          libs = sorted(n for n in z.namelist()
+                        if n.startswith("lib/arm64-v8a/") and n.endswith(".so"))
+          print("Libs nativas empacotadas:")
+          for l in libs:
+              print(f"  {l}")
+          required = {
+              "lib/arm64-v8a/librestuff.so",
+              "lib/arm64-v8a/librexruntime.so",
+              "lib/arm64-v8a/libc++_shared.so",
+          }
+          missing = required - set(libs)
+          if missing:
+              sys.exit(f"ERRO FATAL: libs ausentes do APK: {sorted(missing)}")
+          print("OK: todas as libs nativas obrigatórias estão no APK")
+          EOF
+
       - name: Rename artifacts
         run: |
           mkdir -p dist
