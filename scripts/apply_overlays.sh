@@ -49,7 +49,8 @@ for rel in \
     src/core/timer_queue.cpp \
     src/core/CMakeLists.txt \
     include/rex/thread/fiber.h \
-    src/core/memory_posix.cpp
+    src/core/memory_posix.cpp \
+    src/core/threading_posix.cpp
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
