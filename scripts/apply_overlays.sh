@@ -62,7 +62,8 @@ for rel in \
     src/ui/surface_android.cpp \
     src/core/fiber_android.cpp \
     include/rex/main_android.h \
-    src/system/main_android.cpp
+    src/system/main_android.cpp \
+    include/renderdoc/renderdoc_app.h
 do
     addnew "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
@@ -71,7 +72,8 @@ done
 for rel in \
     src/main.cpp \
     src/restuff_app.h \
-    src/video_player.h
+    src/video_player.h \
+    src/hooks.cpp
 do
     replace "$OVERLAY/NaughtyBear_ReStuff/$rel" "$ROOT/restuff/$rel"
 done
