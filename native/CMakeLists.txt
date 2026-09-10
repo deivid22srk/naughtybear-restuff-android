@@ -146,6 +146,9 @@ target_link_libraries(restuff PRIVATE
 # via rexglue_configure_target(); aqui compilamos direto no alvo (mesmo
 # contrato do REXGLUE_SHARE_DIR do pacote).
 target_sources(restuff PRIVATE "${REXSDK_SOURCE_DIR}/src/ui/rex_app.cpp")
+# Mesmo contrato do rexglue_configure_target: define de config p/ o stamp
+# de versão (rex_app.cpp usa REXGLUE_BUILD_TITLE → REXGLUE_BUILD_CONFIG).
+target_compile_definitions(restuff PRIVATE REXGLUE_BUILD_CONFIG=\"$<CONFIG>\")
 
 # ----------------------------------------------------------------------
 # shaderc (runtime GLSL→SPIR-V do shader_pipeline.cpp)
