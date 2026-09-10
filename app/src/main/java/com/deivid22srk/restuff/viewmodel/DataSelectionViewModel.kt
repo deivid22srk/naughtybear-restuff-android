@@ -9,8 +9,6 @@ import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.deivid22srk.restuff.config.PortBranding
-import com.deivid22srk.restuff.data.GameDataScanner
 import com.deivid22srk.restuff.data.GamePaths
 import com.deivid22srk.restuff.data.IsoExtractor
 import kotlinx.coroutines.Dispatchers
@@ -246,30 +244,23 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
     }
 
     /**
-     * Valida a pasta SAF: procura Default.xex. Se encontrado, despeja os
-     * arquivos da pasta para o game_dir do app (copiando via SAF) — o motor
-     * roda do armazenamento privado.
+     * TODO(validação): a checagem da pasta via SAF (GameDataScanner
+     * .findExpectedFile + DocumentFile.listFiles) foi REMOVIDA TEMPORARIAMENTE
+     * por performance — cada listFiles() do DocumentFile é uma rajada de IPCs
+     * de binder que trava a seleção em pastas grandes. O fluxo continua 100%
+     * funcional: a pasta é marcada como válida na hora, o conteúdo é copiado
+     * em background e o botão "Iniciar Jogo" só lança o motor quando o
+     * marcador local (.extract_ok) confirmar a cópia completa (verificação
+     * BARATA, em arquivo local, sem SAF). Reintroduzir a validação depois de
+     * forma otimizada (cache de listagem + checagem em background).
      */
     private fun validateFolder(uri: Uri) {
-        _uiState.value = DataSelectionUiState(DataPhase.Validating)
+        _uiState.value = DataSelectionUiState(
+            DataPhase.Found(folderUri = uri.toString(), fileName = "pasta extraída")
+        )
         viewModelScope.launch {
-            val fileName = withContext(Dispatchers.IO) {
-                runCatching {
-                    DocumentFile.fromTreeUri(getApplication(), uri)?.let { folder ->
-                        GameDataScanner.findExpectedFile(folder, PortBranding.config)
-                    }
-                }.getOrNull()
-            }
-            _uiState.value = if (fileName != null) {
-                // Pasta válida: copia o conteúdo para o game_dir (uma vez).
-                withContext(Dispatchers.IO) {
-                    copySafFolderToGameDir(uri)
-                }
-                DataSelectionUiState(
-                    DataPhase.Found(folderUri = uri.toString(), fileName = fileName)
-                )
-            } else {
-                DataSelectionUiState(DataPhase.NotFound)
+            withContext(Dispatchers.IO) {
+                copySafFolderToGameDir(uri)
             }
         }
     }
@@ -290,7 +281,9 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
                     val target = File(dst, name)
                     if (target.isFile && target.length() == child.length()) continue
                     app.contentResolver.openInputStream(child.uri)?.use { input ->
-                        target.outputStream().use { output -> input.copyTo(output) }
+                        // Buffer de 1 MiB: o default do copyTo (8 KiB) tornava a
+                        // cópia via SAF dolorosamente lenta em pastas de jogo.
+                        target.outputStream().use { output -> input.copyTo(output, 1 shl 20) }
                     }
                 }
             }
@@ -333,16 +326,20 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
     /** Clique no botão primário com dados prontos — entrega ao motor do port. */
     fun onStartGame() {
         val phase = _uiState.value.phase
-        if (phase is DataPhase.Found) {
-            onLaunchGame?.invoke(phase.folderUri, phase.fileName)
-                ?: run {
-                    Toast.makeText(
-                        getApplication(),
-                        "Motor do port receberia: ${phase.fileName}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+        if (phase !is DataPhase.Found) return
+        // Gate de integridade BARATO (arquivo local, zero SAF): só lança o
+        // motor com a extração/cópia 100% concluída — boot com dados
+        // incompletos = tela preta. Sem bloquear a UI com validação lenta.
+        if (!GamePaths.extractMarker(getApplication()).exists()) {
+            Toast.makeText(
+                getApplication(),
+                "Os dados do jogo ainda estão sendo preparados. Aguarde alguns " +
+                    "instantes e toque em Iniciar Jogo de novo.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
         }
+        onLaunchGame?.invoke(phase.folderUri, phase.fileName)
     }
 
     private companion object {

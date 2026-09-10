@@ -52,6 +52,8 @@ for rel in \
     src/core/memory_posix.cpp \
     src/core/threading_posix.cpp \
     src/core/filesystem_posix.cpp \
+    src/core/logging.cpp \
+    src/ui/vulkan/vulkan_instance.cpp \
     src/system/CMakeLists.txt \
     include/rex/ui/vulkan/device.h \
     include/rex/ui/vulkan/functions/device_1_0.inc \

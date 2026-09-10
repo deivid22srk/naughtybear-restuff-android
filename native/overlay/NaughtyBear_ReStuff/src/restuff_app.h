@@ -206,6 +206,19 @@ class RestuffApp : public rex::ReXApp {
   }
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+#if defined(__ANDROID__)
+    // ANDROID PORT (naughtybear-restuff-android): NÃO registra overlays ImGui.
+    // Motivo duplo, com base no histórico documentado deste código (M3.146/
+    // M3.147): qualquer dialog registrado põe o presenter em
+    // PaintMode::kUIThreadOnRequest (present na UI thread via eventos de
+    // paint do SDL) — o mecanismo de "boot azul/preto" capturado no fork —
+    // e no Android o loop SDL usa SDL_WaitEvent bloqueante, então telas
+    // dependendo de paint requests ficam pretas até o guest produzir quadro.
+    // Além disso os overlays são desktop-only (F3/F4/mouse); a interação no
+    // Android é o gamepad virtual nativo (overlay Compose). Manter o guest
+    // apresentando direto (kGuestOutputThreadImmediately) é o caminho correto.
+    return;
+#else
     // M3.146 (RESTUFF_NO_OVERLAYS=1): adding ANY dialog registers the ImGui
     // drawer as a UI drawer (imgui_drawer.cpp:65-72), and the presenter then
     // chooses kUIThreadOnRequest over kGuestOutputThreadImmediately purely
@@ -231,6 +244,7 @@ class RestuffApp : public rex::ReXApp {
     // Attract-mode video needs the immediate drawer to blit frames.
     // (No AddDialog here -- see the note above; the ctor self-adds.)
     new VideoOverlayDialog(drawer, immediate_drawer());
+#endif
   }
   // (DifficultyDialog and its Salsbury font loader were removed with the fork
   // feature -- see the note at the former include site.)

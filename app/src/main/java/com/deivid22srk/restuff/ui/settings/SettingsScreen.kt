@@ -10,6 +10,8 @@
 package com.deivid22srk.restuff.ui.settings
 
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -39,9 +41,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.Speed
@@ -54,9 +58,14 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,7 +83,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.deivid22srk.restuff.config.PortBranding
+import com.deivid22srk.restuff.data.GpuDriver
+import com.deivid22srk.restuff.data.GpuDriverManager
 import com.deivid22srk.restuff.settings.AspectRatioOption
 import com.deivid22srk.restuff.settings.FpsLimitOption
 import com.deivid22srk.restuff.settings.PortSettings
@@ -422,6 +436,11 @@ fun SettingsScreen(
                     )
                 }
 
+                Spacer(Modifier.height(14.dp))
+
+                // ================= DRIVERS GRÁFICOS (TURNIP) =================
+                DriversSection(accent = accent)
+
                 Spacer(Modifier.height(16.dp))
                 Text(
                     text = config.labelSettingsFooter,
@@ -434,6 +453,258 @@ fun SettingsScreen(
         }
 
         GrainOverlay()
+    }
+}
+
+// ======================================================================
+// Drivers gráficos (padrão AdrenoTools — Turnip/Mesa)
+// ======================================================================
+
+private val DRIVER_ZIP_MIME = arrayOf(
+    "application/zip",
+    "application/octet-stream",
+    "application/x-zip-compressed",
+)
+
+/**
+ * Seção de drivers Vulkan customizados no padrão AdrenoTools: importa .zip
+ * (meta.json + .so), lista, seleciona o ativo e remove. O driver ativo é
+ * carregado DE VERDADE pelo motor no próximo boot do jogo (dlopen no lugar
+ * do libvulkan.so do sistema — ver vulkan_instance.cpp do SDK).
+ */
+@Composable
+private fun DriversSection(accent: Color) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var drivers by remember { mutableStateOf(GpuDriverManager.list(context)) }
+    var activeId by remember { mutableStateOf(GpuDriverManager.activeId(context)) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var isError by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+
+    // Recarrega a lista ao voltar para esta tela (ex.: driver removido
+    // manualmente pelo sistema / outra instância).
+    LaunchedEffect(Unit) {
+        drivers = GpuDriverManager.list(context)
+        activeId = GpuDriverManager.activeId(context)
+    }
+
+    val zipPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importing = true
+        message = null
+        scope.launch {
+            try {
+                val driver = withContext(Dispatchers.IO) {
+                    GpuDriverManager.importFromZip(context, uri)
+                }
+                withContext(Dispatchers.IO) { GpuDriverManager.setActive(context, driver.id) }
+                drivers = GpuDriverManager.list(context)
+                activeId = driver.id
+                message = "Driver “${driver.name}” v${driver.version} importado e ativado — " +
+                    "será usado no próximo início do jogo."
+                isError = false
+            } catch (e: GpuDriverManager.DriverImportException) {
+                message = e.message
+                isError = true
+            } catch (e: Exception) {
+                message = "Falha ao importar driver: ${e.message ?: "erro desconhecido"}"
+                isError = true
+            }
+            importing = false
+        }
+    }
+
+    SettingsSection(title = "Drivers gráficos (Turnip)", icon = Icons.Filled.Memory, accent = accent) {
+        Text(
+            text = "Driver Vulkan no padrão AdrenoTools (.zip com meta.json). " +
+                "O driver selecionado substitui o driver do sistema ao iniciar o jogo; " +
+                "se falhar, o app usa o driver do sistema automaticamente.",
+            color = Color.White.copy(alpha = 0.55f),
+            fontSize = 11.5.sp,
+            lineHeight = 15.sp
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        DriverOptionRow(
+            title = "Padrão do sistema",
+            subtitle = "Vulkan do fabricante do aparelho",
+            selected = activeId == null,
+            accent = accent,
+            onSelect = {
+                GpuDriverManager.clearActive(context)
+                activeId = null
+            },
+            onDelete = null
+        )
+
+        drivers.forEach { driver ->
+            DriverOptionRow(
+                title = "${driver.name}  ${driver.version}",
+                subtitle = listOf(driver.author, driver.vendor, driver.libName)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · "),
+                selected = activeId == driver.id,
+                accent = accent,
+                onSelect = {
+                    runCatching { GpuDriverManager.setActive(context, driver.id) }
+                        .onSuccess {
+                            activeId = driver.id
+                            message = "Driver “${driver.name}” será usado no próximo início do jogo."
+                            isError = false
+                        }
+                        .onFailure { importMsg ->
+                            message = importMsg.message
+                            isError = true
+                        }
+                },
+                onDelete = {
+                    GpuDriverManager.remove(context, driver.id)
+                    drivers = GpuDriverManager.list(context)
+                    activeId = GpuDriverManager.activeId(context)
+                    message = "Driver removido."
+                    isError = false
+                }
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // Botão de importação (mesmo idioma visual dos botões da tela).
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(accent.copy(alpha = if (importing) 0.05f else 0.12f))
+                .border(1.dp, accent.copy(alpha = if (importing) 0.15f else 0.45f), RoundedCornerShape(14.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    enabled = !importing
+                ) { zipPicker.launch(DRIVER_ZIP_MIME) }
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (importing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = accent
+                    )
+                    Text(
+                        text = "Importando driver…",
+                        color = accent.copy(alpha = 0.75f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Text(
+                        text = "Importar driver (.zip)",
+                        color = accent,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        message?.let { msg ->
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = msg,
+                color = if (isError) Color(0xFFE0A0A0) else Color(0xFFA8D8A8),
+                fontSize = 11.5.sp,
+                lineHeight = 15.sp
+            )
+        }
+    }
+}
+
+/** Linha (radio + título + subtítulo + lixeira) de um driver na lista. */
+@Composable
+private fun DriverOptionRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    accent: Color,
+    onSelect: () -> Unit,
+    onDelete: (() -> Unit)?,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) accent.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.03f)
+            )
+            .border(
+                1.dp,
+                if (selected) accent.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.07f),
+                RoundedCornerShape(12.dp)
+            )
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { onSelect() }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .border(2.dp, if (selected) accent else Color.White.copy(alpha = 0.30f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (selected) {
+                Box(Modifier.size(10.dp).background(accent, CircleShape))
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    color = Color.White.copy(alpha = 0.45f),
+                    fontSize = 10.5.sp,
+                    lineHeight = 13.sp,
+                    maxLines = 1
+                )
+            }
+        }
+        onDelete?.let { del ->
+            IconButton(onClick = del, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.DeleteOutline,
+                    contentDescription = "Remover driver",
+                    tint = Color(0xFFFF6B6B).copy(alpha = 0.75f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
     }
 }
 

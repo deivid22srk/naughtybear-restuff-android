@@ -28,6 +28,7 @@
 #include <SDL3/SDL_joystick.h>
 #include <SDL3/SDL_system.h>  // SDL_GetAndroidActivity / SDL_GetAndroidJNIEnv
 
+#include <cstdio>
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
@@ -158,19 +159,46 @@ int main(int argc, char** argv) {
 
   // Opções do launcher chegam como flags --restuff-*: traduz para o formato
   // que o restuff espera (env do hook de 60fps + env do config path).
+  const char* app_files_dir = nullptr;
   for (int i = 0; i < argc; ++i) {
     const char* a = argv[i];
     if (strncmp(a, "--app-files-dir=", 16) == 0) {
       // Pasta de arquivos do app para o SDK: GetExecutableFolder/GetUserFolder
       // resolvem /proc/self/exe → /system/bin (read-only) no Android, o que
       // abortava o motor no InitLogging (create_directories /system/bin/logs).
-      setenv("REX_ANDROID_FILES_DIR", a + 16, 1);
+      app_files_dir = a + 16;
+      setenv("REX_ANDROID_FILES_DIR", app_files_dir, 1);
     } else if (strncmp(a, "--fps60=", 8) == 0) {
       if (strcmp(a + 8, "true") == 0) {
         setenv("RESTUFF_FPS60", "1", 1);
       }
     } else if (strncmp(a, "--config=", 9) == 0) {
       setenv("REX_CONFIG_PATH", a + 9, 1);
+    }
+  }
+
+  // Driver Vulkan customizado (padrão AdrenoTools/Turnip): o Driver Manager
+  // (tela Configurações) persiste <files>/drivers/active.txt com
+  // "lib=<caminho absoluto do .so>". Lê aqui, ANTES de qualquer init
+  // gráfico — o loader do SDK (vulkan_instance.cpp) faz dlopen nele e cai
+  // para o driver do sistema em caso de falha.
+  if (app_files_dir != nullptr) {
+    char active_path[512];
+    snprintf(active_path, sizeof(active_path), "%s/drivers/active.txt",
+             app_files_dir);
+    if (FILE* f = fopen(active_path, "r")) {
+      char line[512];
+      while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "lib=", 4) == 0) {
+          if (char* nl = strchr(line + 4, '\n')) *nl = '\0';
+          if (line[4] != '\0') {
+            setenv("REX_VULKAN_LOADER_PATH", line + 4, 1);
+            ALOG("Vulkan driver custom (AdrenoTools): %s", line + 4);
+          }
+          break;
+        }
+      }
+      fclose(f);
     }
   }
 
@@ -203,6 +231,7 @@ int main(int argc, char** argv) {
       ALOG("SDLWindowedAppContext::Initialize failed: %s", SDL_GetError());
       return EXIT_FAILURE;
     }
+    ALOG("boot: contexto SDL inicializado");
 
     // Cria o app registrado por REX_DEFINE_APP(restuff, ...) no main.cpp do
     // ReStuff (XE_UI_WINDOWED_APPS_IN_LIBRARY=1 no Android).
@@ -213,6 +242,7 @@ int main(int argc, char** argv) {
       return EXIT_FAILURE;
     }
     std::unique_ptr<rex::ui::WindowedApp> app = creator(app_context);
+    ALOG("boot: app 'restuff' (ReXApp) criado");
 
     // Casamento de argumentos posicionais restantes (mesma semântica do
     // entry point desktop do SDK).
@@ -226,7 +256,10 @@ int main(int argc, char** argv) {
 
     restuff_android::AttachVirtualGamepad();
 
-    result = app->OnInitialize() ? app_context.RunMainMessageLoop() : EXIT_FAILURE;
+    const bool init_ok = app->OnInitialize();
+    ALOG("boot: ReXApp::OnInitialize -> %s", init_ok ? "ok" : "FALHOU");
+    result = init_ok ? app_context.RunMainMessageLoop() : EXIT_FAILURE;
+    ALOG("boot: RunMainMessageLoop retornou %d", result);
 
     app->InvokeOnDestroy();
   }
