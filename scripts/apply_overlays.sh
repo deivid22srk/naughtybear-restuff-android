@@ -50,7 +50,8 @@ for rel in \
     src/core/CMakeLists.txt \
     include/rex/thread/fiber.h \
     src/core/memory_posix.cpp \
-    src/core/threading_posix.cpp
+    src/core/threading_posix.cpp \
+    src/system/CMakeLists.txt
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
@@ -60,7 +61,8 @@ for rel in \
     include/rex/ui/surface_android.h \
     src/ui/surface_android.cpp \
     src/core/fiber_android.cpp \
-    include/rex/main_android.h
+    include/rex/main_android.h \
+    src/system/main_android.cpp
 do
     addnew "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done

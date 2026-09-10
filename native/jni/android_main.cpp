@@ -26,6 +26,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
+#include <SDL3/SDL_system.h>  // SDL_GetAndroidActivity / SDL_GetAndroidJNIEnv
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -167,12 +168,22 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Hooks Android do SDK: dlopen de libc/libandroid + captura da JavaVM
-  // para a ponte SAF (deve rodar na thread principal do SDL, antes de
+  // Hooks Android do SDK: dlopen de libc/libandroid no SDK + bootstrap JNI
+  // da ponte SAF (JavaVM/Context do thread principal do SDL, antes de
   // qualquer thread/mapped memory do motor).
   rex::thread::AndroidInitialize();
   rex::memory::AndroidInitialize();
-  rex::filesystem::AndroidInitialize();
+  {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    JavaVM* vm = nullptr;
+    if (env) {
+      env->GetJavaVM(&vm);
+    } else {
+      ALOG("SDL_GetAndroidJNIEnv() nulo no bootstrap JNI");
+    }
+    rex::filesystem::SetAndroidJniContext(vm, SDL_GetAndroidActivity());
+    rex::filesystem::AndroidInitialize();
+  }
 
   auto remaining = rex::cvar::Init(argc, argv);
   rex::cvar::ApplyEnvironment();

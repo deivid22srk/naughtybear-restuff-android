@@ -1,30 +1,44 @@
-// restuff - Android port (naughtybear-restuff-android)
-//
-// Implementação da ponte embedder ↔ SDK no Android:
-//   - rex::GetAndroidApiLevel()          — esperada por threading_posix /
-//                                          memory_posix (dlsym condicional
-//                                          de pthread_getname_np e
-//                                          ASharedMemory_create).
-//   - rex::filesystem::{AndroidInitialize, AndroidShutdown,
-//     IsAndroidContentUri, OpenAndroidContentFileDescriptor}
-//                                        — esperadas por mapped_memory_posix
-//                                          (MappedMemory::OpenForAndroidContentUri).
-//                                          É o caminho SAF do port: abre o
-//                                          ISO selecionado via persistable
-//                                          URI permission SEM cópia, via
-//                                          ContentResolver →
-//                                          ParcelFileDescriptor.detachFd().
+/**
+ * @file        rex/system/main_android.cpp
+ * @brief       Ponte embedder ↔ SDK no Android (compilada no rexruntime).
+ *
+ * @copyright   Copyright (c) 2026 naughtybear-restuff-android port.
+ *
+ * @license     BSD 3-Clause License
+ *              See LICENSE file in the project root for full license text.
+ *
+ * @remarks     Implementa os hooks Android que o SDK espera do embedder:
+ *                - rex::GetAndroidApiLevel()      (threading_posix,
+ *                                                  memory_posix: dlsym
+ *                                                  condicional de
+ *                                                  pthread_getname_np e
+ *                                                  ASharedMemory_create);
+ *                - rex::filesystem::AndroidInitialize/AndroidShutdown,
+ *                  IsAndroidContentUri,
+ *                  OpenAndroidContentFileDescriptor
+ *                                               (mapped_memory_posix:
+ *                                                  MappedMemory::
+ *                                                  OpenForAndroidContentUri).
+ *
+ *              O caminho SAF abre o ISO selecionado via persistable URI
+ *              permission SEM cópia: ContentResolver.openFileDescriptor →
+ *              ParcelFileDescriptor.detachFd().
+ *
+ *              Este arquivo vive dentro do librexruntime.so (que é quem
+ *              referencia estes símbolos no link). Não usa SDL — a JavaVM
+ *              e o Context chegam via rex::filesystem::SetAndroidJniContext
+ *              (chamado pelo android_main do embedder, no thread principal).
+ */
 
 #include <sys/system_properties.h>
 
-#include <android/log.h>
 #include <jni.h>
+
+#include <android/log.h>
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
-
-#include <SDL3/SDL_system.h>  // SDL_GetAndroidJNIEnv / SDL_GetAndroidActivity
 
 #include <rex/filesystem.h>
 #include <rex/main_android.h>
@@ -33,12 +47,10 @@
 
 namespace {
 
-// JavaVM capturada em AndroidInitialize() (thread principal do SDL, já
-// attachada). Chamadas posteriores podem vir de std::threads do motor —
-// attach/detach local resolve.
 JavaVM* g_javavm = nullptr;
+jobject g_context = nullptr;  // GlobalRef do Activity (android.content.Context)
 
-// JNIEnv com attach escopo-privado.
+// JNIEnv com attach escopo-privado (threads do motor não são JNI-attachadas).
 class ScopedJNIEnv {
  public:
   explicit ScopedJNIEnv(JavaVM* vm) : vm_(vm) {
@@ -78,15 +90,6 @@ bool CheckAndClearException(JNIEnv* env, const char* what) {
   return false;
 }
 
-jobject GetActivityContext(JNIEnv* env) {
-  (void)env;
-  jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
-  if (!activity) {
-    ALOG("SAF: SDL_GetAndroidActivity() nulo");
-  }
-  return activity;
-}
-
 }  // namespace
 
 namespace rex {
@@ -107,20 +110,37 @@ int GetAndroidApiLevel() {
 
 namespace rex::filesystem {
 
-void AndroidInitialize() {
-  // Captura a JavaVM a partir do JNIEnv do thread principal do SDL.
-  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
-  if (env) {
-    if (!g_javavm) {
-      env->GetJavaVM(&g_javavm);
+void SetAndroidJniContext(void* javavm, void* activity_context) {
+  // Substitui refs anteriores, se houver.
+  if (g_context && g_javavm) {
+    JNIEnv* env = nullptr;
+    if (g_javavm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK && env) {
+      env->DeleteGlobalRef(g_context);
     }
-  } else {
-    ALOG("AndroidInitialize: SDL_GetAndroidJNIEnv() nulo");
+    g_context = nullptr;
+  }
+  g_javavm = static_cast<JavaVM*>(javavm);
+  if (activity_context && g_javavm) {
+    ScopedJNIEnv scoped(g_javavm);
+    if (scoped.env()) {
+      g_context = scoped.env()->NewGlobalRef(static_cast<jobject>(activity_context));
+    }
   }
 }
 
+void AndroidInitialize() {
+  // Bootstrap JNI chega via SetAndroidJniContext (embedder); nada a fazer.
+}
+
 void AndroidShutdown() {
-  // Sem recursos JNI persistentes para liberar (fds são detachados).
+  if (g_context && g_javavm) {
+    JNIEnv* env = nullptr;
+    if (g_javavm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK && env) {
+      env->DeleteGlobalRef(g_context);
+    }
+  }
+  g_context = nullptr;
+  // g_javavm permanece (VM vive além do processo do jogo).
 }
 
 bool IsAndroidContentUri(const std::string_view source) {
@@ -128,18 +148,14 @@ bool IsAndroidContentUri(const std::string_view source) {
 }
 
 int OpenAndroidContentFileDescriptor(const std::string_view uri, const char* mode) {
-  if (!g_javavm) {
-    ALOG("SAF: JavaVM não inicializada (AndroidInitialize não chamado?)");
+  if (!g_javavm || !g_context) {
+    ALOG("SAF: JNI não inicializado (SetAndroidJniContext não chamado?)");
     return -1;
   }
   ScopedJNIEnv scoped(g_javavm);
   JNIEnv* env = scoped.env();
   if (!env) {
     ALOG("SAF: falha ao obter JNIEnv");
-    return -1;
-  }
-  jobject context = GetActivityContext(env);
-  if (!context) {
     return -1;
   }
 
@@ -161,7 +177,7 @@ int OpenAndroidContentFileDescriptor(const std::string_view uri, const char* mod
   jmethodID get_resolver =
       env->GetMethodID(ctx_class, "getContentResolver", "()Landroid/content/ContentResolver;");
   if (!get_resolver) return -1;
-  jobject resolver = env->CallObjectMethod(context, get_resolver);
+  jobject resolver = env->CallObjectMethod(g_context, get_resolver);
   if (!resolver || CheckAndClearException(env, "getContentResolver")) return -1;
 
   // resolver.openFileDescriptor(uri, mode) → ParcelFileDescriptor

@@ -66,7 +66,8 @@ set(RESTUFF_SOURCES
 # ----------------------------------------------------------------------
 set(ANDROID_JNI_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/jni/android_main.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/jni/main_android.cpp"
+    # main_android.cpp (hooks embedder) vive no target rexruntime —
+    # ver native/overlay/rexglue-sdk/src/system/CMakeLists.txt.
 )
 
 # ----------------------------------------------------------------------
