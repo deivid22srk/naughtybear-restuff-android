@@ -133,7 +133,7 @@ target_compile_options(restuff PRIVATE
 )
 
 # rex::runtime traz rexcore/rexfilesystem/rexaudio/rexinput (e SDL3).
-# rex::ui é OBJECT library (ReXApp, window_sdl, imgui_drawer, overlay dialogs
+# rex::ui é OBJECT library (window_sdl, imgui_drawer, overlay dialogs
 # e os objetos imgui) — os objetos entram direto no link do restuff.
 target_link_libraries(restuff PRIVATE
     rex::runtime
@@ -141,6 +141,11 @@ target_link_libraries(restuff PRIVATE
     android
     log
 )
+
+# ReXApp (classe base derivada pelo restuff_app.h): no SDK instalado entra
+# via rexglue_configure_target(); aqui compilamos direto no alvo (mesmo
+# contrato do REXGLUE_SHARE_DIR do pacote).
+target_sources(restuff PRIVATE "${REXSDK_SOURCE_DIR}/src/ui/rex_app.cpp")
 
 # ----------------------------------------------------------------------
 # shaderc (runtime GLSL→SPIR-V do shader_pipeline.cpp)
