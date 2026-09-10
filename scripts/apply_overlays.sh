@@ -48,7 +48,8 @@ for rel in \
     include/rex/chrono/chrono.h \
     src/core/timer_queue.cpp \
     src/core/CMakeLists.txt \
-    include/rex/thread/fiber.h
+    include/rex/thread/fiber.h \
+    src/core/memory_posix.cpp
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
@@ -57,7 +58,8 @@ done
 for rel in \
     include/rex/ui/surface_android.h \
     src/ui/surface_android.cpp \
-    src/core/fiber_android.cpp
+    src/core/fiber_android.cpp \
+    include/rex/main_android.h
 do
     addnew "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done

@@ -28,8 +28,11 @@
 #include <SDL3/SDL_joystick.h>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/platform.h>
+#include <rex/thread.h>
 #include <rex/ui/windowed_app.h>
 #include <rex/ui/windowed_app_context_sdl.h>
 
@@ -164,6 +167,13 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Hooks Android do SDK: dlopen de libc/libandroid + captura da JavaVM
+  // para a ponte SAF (deve rodar na thread principal do SDL, antes de
+  // qualquer thread/mapped memory do motor).
+  rex::thread::AndroidInitialize();
+  rex::memory::AndroidInitialize();
+  rex::filesystem::AndroidInitialize();
+
   auto remaining = rex::cvar::Init(argc, argv);
   rex::cvar::ApplyEnvironment();
   rex::InitLoggingEarly();
@@ -203,6 +213,10 @@ int main(int argc, char** argv) {
 
     app->InvokeOnDestroy();
   }
+
+  rex::filesystem::AndroidShutdown();
+  rex::memory::AndroidShutdown();
+  rex::thread::AndroidShutdown();
 
   ALOG("restuff native main exiting with %d", result);
   return result;
