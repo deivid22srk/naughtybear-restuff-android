@@ -13,8 +13,13 @@ import java.io.File
  *                    Pode ser (a) a pasta REAL no armazenamento do usuário
  *                    (fluxo de pasta, SEM cópia — o motor lê direto via
  *                    POSIX com "Acesso a todos os arquivos") ou (b) a pasta
- *                    extraída do ISO no armazenamento privado do app.
- *  - [gameDir]     : pasta extraída do ISO dentro do app (fluxo ISO).
+ *                    extraída do ISO no armazenamento privado do app
+ *                    (legado — versões antigas do app extraíam ~8 GB).
+ *  - [isoSource]   : "iso_source_path" — boot IN-PLACE do ISO (modelo
+ *                    XenDroid): caminho real do .iso OU content:// URI do
+ *                    SAF. O motor monta a IMAGEM onde ela está
+ *                    (DiscImageDevice — mmap) e NADA é copiado para dentro
+ *                    do app. Tem prioridade sobre os dois fluxos acima.
  *  - [savesDir]    : "user_data_root" — saves/XCONTENT do jogo, separados
  *                    da pasta do jogo para que "limpar dados" não apague saves.
  *  - [configFile]  : restuff.toml gerado a partir das Configurações do app.
@@ -29,11 +34,13 @@ object GamePaths {
     /** Mesmo arquivo de prefs usado pelo [com.deivid22srk.restuff.viewmodel.DataSelectionViewModel]. */
     private const val PREFS_NAME = "port_screen_prefs"
     private const val KEY_GAME_ROOT = "game_root_path"
+    private const val KEY_ISO_SOURCE = "iso_source_path"
 
     /**
-     * Raiz do jogo que o motor deve usar: a pasta real persistida pelo fluxo
-     * de pasta (sem cópia) quando ainda existe no disco; senão a pasta
-     * extraída do ISO dentro do armazenamento privado do app.
+     * Raiz do jogo que o motor deve usar (fluxos pasta/extraído — para o
+     * boot IN-PLACE do ISO veja [isoSource]/[gameDataRootArgument]): a pasta
+     * real persistida pelo fluxo de pasta (sem cópia) quando ainda existe
+     * no disco; senão a pasta extraída do ISO no armazenamento privado.
      */
     fun gameRoot(context: Context): File {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -43,6 +50,31 @@ object GamePaths {
         }
         return gameDir(context)
     }
+
+    /**
+     * Fonte do ISO para o boot IN-PLACE (caminho real ou content:// URI),
+     * persistida entre sessões/reboots. Tem prioridade sobre a pasta e
+     * sobre o extraído legado quando definida.
+     */
+    fun isoSource(context: Context): String? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_ISO_SOURCE, null)
+
+    /** Persiste a fonte do ISO in-place. null limpa. */
+    fun setIsoSource(context: Context, source: String?) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (source == null) prefs.edit().remove(KEY_ISO_SOURCE).apply()
+        else prefs.edit().putString(KEY_ISO_SOURCE, source).apply()
+    }
+
+    /**
+     * Valor de --game_data_root entregue ao motor: o ISO in-place quando
+     * selecionado (caminho real OU content:// — o nativo decide como mapear),
+     * senão a pasta do fluxo pasta/extraído. Sempre retorna um valor — o
+     * extraído legado é o último recurso.
+     */
+    fun gameDataRootArgument(context: Context): String =
+        isoSource(context) ?: gameRoot(context).absolutePath
 
     fun gameDir(context: Context): File =
         File(context.filesDir, GAME_DIR_NAME)
@@ -93,12 +125,8 @@ object GamePaths {
         cacheDir(context)
     }
 
-    /** Apaga todo o conteúdo extraído (usado antes de re-extrair ou limpar). */
+    /** Apaga todo o conteúdo extraído (limpeza do extraído legado). */
     fun wipeGameData(context: Context) {
         gameDir(context).deleteRecursively()
     }
-
-    /** Espaço livre aproximado em bytes no armazenamento interno. */
-    fun freeSpaceBytes(context: Context): Long =
-        context.filesDir.usableSpace
 }

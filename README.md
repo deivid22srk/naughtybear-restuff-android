@@ -23,18 +23,29 @@ O port **não inclui** nenhum arquivo do jogo. Em primeira execução o app pede
 | `Default.xex` | Build (codegen do recomp) **e** runtime | baixado pelo CI da [release Archive](https://github.com/deivid22srk/Naughty-Bear-archive/releases/download/Archive/Default.xex) |
 | ISO da Naughty Bear Gold Edition | Runtime (conteúdo do jogo) | **você fornece** no app, via seletor de arquivos |
 
-Como funciona o fluxo de dados (sem cópia do ISO):
+Como funciona o fluxo de dados (boot do ISO **in-place** — modelo XenDroid):
 
 1. Toque em **Selecionar ISO** e escolha o `.iso` do jogo (Storage Access
-   Framework, com permissão persistida — o arquivo **não é copiado nem movido**).
-2. O app abre o ISO via acesso aleatório (`ParcelFileDescriptor`) e extrai o
-   conteúdo do disco (GDFX/XDVDFS) **uma única vez** para o armazenamento
-   privado do app (~8 GB livres necessários).
-3. O jogo roda da pasta extraída (montada como `\Device\Harddisk0\Partition1`
-   pelo runtime do rexglue — mesma semântica do goopie launcher no PC).
+   Framework, com permissão persistida — o arquivo **não é copiado nem
+   movido**, e a seleção sobrevive a reboots).
+2. O app valida a assinatura GDFX/XDVDFS (`MICROSOFT*XBOX*MEDIA`, leitura de
+   ~28 bytes) e resolve a fonte: **caminho real** quando o URI do SAF é
+   traduzível e legível pelo processo, senão o próprio **content:// URI**.
+3. O motor monta a imagem **onde ela está** (`DiscImageDevice` — mmap sobre o
+   arquivo ou sobre o fd do ContentResolver) como
+   `\Device\Harddisk0\Partition1`. Nada é extraído: **zero cópia, zero espaço
+   adicional** (~8 GB a menos que o fluxo antigo), e a permissão "Acesso a
+   todos os arquivos" **não é exigida** para o ISO (o grant do SAF cobre até
+   pendrives OTG).
 
-Alternativa: **Selecionar Pasta Extraída** aceita uma pasta SAF que já contenha
-o `Default.xex` e os arquivos do jogo soltos.
+Alternativas: **Selecionar Pasta Extraída** aceita uma pasta com o
+`Default.xex` e os arquivos soltos (exige "Acesso a todos os arquivos"), e
+instalações de versões antigas continuam rodando do extraído legado
+(`files/game`) até você selecionar um ISO — momento em que o extraído é
+liberado automaticamente.
+
+Limitação: ISOs em providers que não dão fd seekable (nuvem via SAF) não são
+montáveis — escolha o arquivo do armazenamento do aparelho.
 
 ## Recursos do port
 

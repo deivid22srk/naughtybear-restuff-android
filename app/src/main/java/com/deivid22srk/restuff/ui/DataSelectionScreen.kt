@@ -8,7 +8,6 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.Arrangement
@@ -66,8 +65,9 @@ import com.deivid22srk.restuff.viewmodel.DataSelectionUiState
 import com.deivid22srk.restuff.viewmodel.DataSelectionViewModel
 
 /**
- * Roteador da tela: conecta ViewModel, SAF (OpenDocumentTree), o ViewModel de
- * configurações e o estado de "reduzir movimento" (sistema OU override manual).
+ * Roteador da tela: conecta ViewModel, SAF (OpenDocument/OpenDocumentTree),
+ * o ViewModel de configurações e o estado de "reduzir movimento" (sistema OU
+ * override manual).
  */
 @Composable
 fun DataSelectionRoute(
@@ -77,7 +77,6 @@ fun DataSelectionRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
-    val extraction by viewModel.extraction.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // ------------------------------------------------------------------
@@ -146,7 +145,8 @@ fun DataSelectionRoute(
         if (uri != null) viewModel.onFolderPicked(uri)
     }
 
-    // Picker primário: o .iso do jogo (SAF, URI persistido, sem cópia).
+    // Picker primário: o .iso do jogo (SAF, URI persistido). O disco é
+    // montado IN-PLACE pelo motor — nada é copiado para dentro do app.
     val isoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -176,15 +176,6 @@ fun DataSelectionRoute(
         },
         onOpenSettings = onOpenSettings
     )
-
-    // Diálogo de progresso da extração do ISO.
-    if (extraction.active || (extraction.done && extraction.error != null)) {
-        ExtractionProgressDialog(
-            state = extraction,
-            onDismiss = { viewModel.dismissExtractionDialog() },
-            onCancel = { viewModel.cancelExtraction() }
-        )
-    }
 }
 
 private val ISO_MIME = arrayOf("application/octet-stream", "application/x-iso9660-image")
@@ -475,6 +466,9 @@ private fun BottomBar(onOpenSettings: () -> Unit, modifier: Modifier = Modifier)
  * explica por que o app precisa do "Acesso a todos os arquivos" e abre o
  * painel do sistema quando tocado. Some sozinho quando a permissão é
  * concedida (reavaliada a cada ON_RESUME).
+ *
+ * Nota: este banner serve apenas ao fluxo de PASTA. O fluxo de ISO (primário)
+ * roda o disco onde está via grant do SAF — não exige esta permissão.
  */
 @Composable
 private fun StorageAccessBanner(
@@ -515,78 +509,4 @@ private fun StorageAccessBanner(
             }
         }
     }
-}
-
-/**
- * Diálogo de progresso da extração do ISO — mostra o arquivo corrente, os
- * bytes já despejados e um botão de cancelar. Mesmo idioma visual do port
- * (painéis de vidro, acento do branding).
- */
-@Composable
-private fun ExtractionProgressDialog(
-    state: com.deivid22srk.restuff.viewmodel.ExtractionUiState,
-    onDismiss: () -> Unit,
-    onCancel: () -> Unit,
-) {
-    val accent = PortBranding.config.accent
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = {
-            if (state.done) onDismiss()
-        },
-        title = {
-            Text(
-                text = when {
-                    state.error != null -> "Falha na extração"
-                    state.phase == com.deivid22srk.restuff.data.IsoExtractor.Phase.CANCELLED ->
-                        "Extração cancelada"
-                    state.done -> "Dados prontos"
-                    else -> "Extraindo dados do ISO…"
-                },
-                color = Color.White
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (state.error != null) {
-                    Text(state.error, color = Color(0xFFE0A0A0))
-                } else if (!state.done) {
-                    val mb = state.bytesCopied / (1024f * 1024f)
-                    Text(
-                        text = state.currentFile.ifEmpty { "Lendo a imagem de disco…" },
-                        color = Color(0xFFC9CBD6),
-                        maxLines = 1
-                    )
-                    LinearProgressIndicator(
-                        progress = {
-                            // Sem tamanho total confiável (SAF): progresso infinito suave.
-                            0.35f
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = accent,
-                        trackColor = Color(0x22FFFFFF)
-                    )
-                    Text(
-                        text = String.format("%.0f MB despejados", mb),
-                        color = Color(0xFF9DA0AC),
-                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall
-                    )
-                } else {
-                    Text(
-                        "O conteúdo do disco foi extraído para o armazenamento do app. O arquivo ISO original permanece no local onde você o deixou.",
-                        color = Color(0xFFC9CBD6)
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = if (state.done) onDismiss else onCancel
-            ) {
-                Text(if (state.done) "Fechar" else "Cancelar")
-            }
-        },
-        containerColor = Color(0xFF14141C),
-        titleContentColor = Color.White,
-        textContentColor = Color(0xFFC9CBD6)
-    )
 }

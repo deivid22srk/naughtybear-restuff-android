@@ -63,10 +63,12 @@ class GameActivity : SDLActivity() {
     override fun getArguments(): Array<String> {
         val settings = PortSettingsRepository(this).load()
         val filesDir = filesDir.absolutePath
-        // game_data_root: pasta REAL do usuário (fluxo de pasta, sem cópia —
-        // o motor lê via POSIX com All Files Access) ou a pasta extraída do
-        // ISO no armazenamento privado. Decidido pelo GamePaths.gameRoot.
-        val gameRoot = GamePaths.gameRoot(this).absolutePath
+        // game_data_root: (1) ISO IN-PLACE — caminho real do .iso OU
+        // content:// URI do SAF (o nativo monta a imagem GDFX onde ela está,
+        // via DiscImageDevice — modelo XenDroid, sem cópia); (2) pasta REAL
+        // do usuário (fluxo de pasta, sem cópia — POSIX + All Files Access);
+        // (3) extraído legado (<files>/game). Decidido pelo GamePaths.
+        val gameRoot = GamePaths.gameDataRootArgument(this)
         val savesRoot = GamePaths.savesDir(this).absolutePath
         val cacheRoot = GamePaths.cacheDir(this).absolutePath
         val configPath = GamePaths.configFile(this).absolutePath

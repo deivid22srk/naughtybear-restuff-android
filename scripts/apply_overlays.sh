@@ -3,7 +3,8 @@
 #   - rexglue-sdk: surface_android (NOVOS arquivos), branch Android no
 #     window_sdl.cpp/ui CMake (substituição), deps android/log, dynlib
 #     (Adopt/dlerror p/ AdrenoTools), vulkan_device (defaults mobile),
-#     vulkan_instance (driver custom via libadrenotools)
+#     vulkan_instance (driver custom via libadrenotools), runtime/rex_app/
+#     disc_image_device (boot in-place do ISO — modelo XenDroid)
 #   - NaughtyBear_ReStuff: gating __ANDROID__ em main.cpp/restuff_app.h,
 #     native_vk.cpp (fix do LoaderGdpa — vkCmd* via tabela da instance)
 #
@@ -63,7 +64,10 @@ for rel in \
     src/system/CMakeLists.txt \
     include/rex/ui/vulkan/device.h \
     include/rex/ui/vulkan/functions/device_1_0.inc \
-    src/ui/vulkan/vulkan_device.cpp
+    src/ui/vulkan/vulkan_device.cpp \
+    src/system/runtime.cpp \
+    src/ui/rex_app.cpp \
+    src/filesystem/devices/disc_image_device.cpp
 do
     replace "$OVERLAY/rexglue-sdk/$rel" "$ROOT/rexglue-sdk/$rel"
 done
