@@ -472,6 +472,14 @@ void SDLInputDriver::ProcessEventLocked(const SDL_Event& event) {
 }
 
 void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
+  // Idempotency guard: the same instance can be delivered twice. On Android
+  // the startup enumeration (re-synthesized ADDED below) covers pads attached
+  // before the watch; a pad whose ADDED fires inside that same window would
+  // arrive through BOTH paths. SDL_OpenGamepad refcounts the handle, but
+  // controllers_ would grow a phantom entry (ghost player 2 / zombie pad).
+  if (GetControllerIndexFromInstanceID(event.gdevice.which)) {
+    return;
+  }
   const auto controller = SDL_OpenGamepad(event.gdevice.which);
   if (!controller) {
     assert_always();
