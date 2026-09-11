@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -174,6 +175,21 @@ int main(int argc, char** argv) {
       }
     } else if (strncmp(a, "--config=", 9) == 0) {
       setenv("REX_CONFIG_PATH", a + 9, 1);
+    } else if (strncmp(a, "--cache_root=", 13) == 0) {
+      // Os caches do renderer (shader_spv.bin / pipeline_cache.bin /
+      // pipeline_prewarm.bin) são ancorados no diretório do executável via
+      // /proc/self/exe → /system/bin (read-only no Android: "M4.40 SPIR-V
+      // cache save failed to open /system/bin/..."). Todos respeitam um env
+      // de override — redireciona para o cache dir privado do app.
+      const char* cache_root = a + 13;
+      std::error_code fs_ec;
+      std::filesystem::create_directories(cache_root, fs_ec);
+      std::string spv = std::string(cache_root) + "/shader_spv.bin";
+      std::string pipe = std::string(cache_root) + "/pipeline_cache.bin";
+      std::string prewarm = std::string(cache_root) + "/pipeline_prewarm.bin";
+      setenv("RESTUFF_SPVCACHE_FILE", spv.c_str(), 1);
+      setenv("RESTUFF_PIPE_CACHE", pipe.c_str(), 1);
+      setenv("RESTUFF_PREWARM_FILE", prewarm.c_str(), 1);
     }
   }
 

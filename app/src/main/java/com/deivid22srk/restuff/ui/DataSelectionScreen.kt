@@ -1,5 +1,9 @@
 package com.deivid22srk.restuff.ui
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +32,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,7 +41,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.deivid22srk.restuff.config.PortBranding
@@ -71,6 +80,66 @@ fun DataSelectionRoute(
     val extraction by viewModel.extraction.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
+    // ------------------------------------------------------------------
+    // "Acesso a todos os arquivos" (fluxo de pasta SEM CÓPIA): o motor lê a
+    // pasta do jogo direto do armazenamento — sem All Files Access o open()
+    // POSIX falha (EACCES). Android 11+ usa o painel especial do sistema;
+    // Android 9/10 usa READ_EXTERNAL_STORAGE em runtime. O estado é reavaliado
+    // a cada ON_RESUME (o usuário volta do painel de permissões).
+    // ------------------------------------------------------------------
+    var hasAllFiles by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
+        )
+    }
+    var legacyStorageGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.R || hasAllFiles
+        )
+    }
+    val legacyPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> legacyStorageGranted = granted }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    hasAllFiles = Environment.isExternalStorageManager()
+                    legacyStorageGranted = true
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val openAllFilesSettings = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                )
+            } catch (_: Exception) {
+                // Alguns builds não têm o painel por-app: abre o geral.
+                context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+        } else {
+            legacyPermission.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        Unit
+    }
+
+    val storageReady = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        hasAllFiles
+    } else {
+        legacyStorageGranted
+    }
+
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -97,10 +166,14 @@ fun DataSelectionRoute(
         state = state,
         reduceMotion = reduceMotion,
         particlesEnabled = settings.particlesEnabled,
+        storageReady = storageReady,
+        onGrantStorage = openAllFilesSettings,
         onSelectData = {
             if (state.phase is DataPhase.Found) viewModel.onStartGame() else isoPicker.launch(ISO_MIME)
         },
-        onSelectFolder = { folderPicker.launch(null) },
+        onSelectFolder = {
+            if (storageReady) folderPicker.launch(null) else openAllFilesSettings()
+        },
         onOpenSettings = onOpenSettings
     )
 
@@ -134,6 +207,8 @@ fun DataSelectionScreen(
     state: DataSelectionUiState,
     reduceMotion: Boolean,
     particlesEnabled: Boolean,
+    storageReady: Boolean,
+    onGrantStorage: () -> Unit,
     onSelectData: () -> Unit,
     onSelectFolder: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -162,6 +237,8 @@ fun DataSelectionScreen(
                 state = state,
                 reduceMotion = reduceMotion,
                 compact = compact,
+                storageReady = storageReady,
+                onGrantStorage = onGrantStorage,
                 onSelectData = onSelectData,
                 onSelectFolder = onSelectFolder,
                 onOpenCredits = { creditsOpen = true },
@@ -172,6 +249,8 @@ fun DataSelectionScreen(
                 state = state,
                 reduceMotion = reduceMotion,
                 compact = compact,
+                storageReady = storageReady,
+                onGrantStorage = onGrantStorage,
                 onSelectData = onSelectData,
                 onSelectFolder = onSelectFolder,
                 onOpenCredits = { creditsOpen = true },
@@ -197,6 +276,8 @@ private fun PortraitContent(
     state: DataSelectionUiState,
     reduceMotion: Boolean,
     compact: Boolean,
+    storageReady: Boolean,
+    onGrantStorage: () -> Unit,
     onSelectData: () -> Unit,
     onSelectFolder: () -> Unit,
     onOpenCredits: () -> Unit,
@@ -221,6 +302,15 @@ private fun PortraitContent(
             Spacer(Modifier.height(if (compact) 18.dp else 28.dp))
 
             StatusArea(state.phase, compact, reduceMotion)
+
+            if (!storageReady) {
+                Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
+                StorageAccessBanner(
+                    compact = compact,
+                    onGrant = onGrantStorage,
+                    modifier = Modifier.widthIn(max = 420.dp)
+                )
+            }
 
             Spacer(Modifier.height(if (compact) 18.dp else 26.dp))
 
@@ -266,6 +356,8 @@ private fun WideContent(
     state: DataSelectionUiState,
     reduceMotion: Boolean,
     compact: Boolean,
+    storageReady: Boolean,
+    onGrantStorage: () -> Unit,
     onSelectData: () -> Unit,
     onSelectFolder: () -> Unit,
     onOpenCredits: () -> Unit,
@@ -315,6 +407,15 @@ private fun WideContent(
                 verticalArrangement = Arrangement.Center
             ) {
                 StatusArea(state.phase, compact, reduceMotion)
+
+                if (!storageReady) {
+                    Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
+                    StorageAccessBanner(
+                        compact = compact,
+                        onGrant = onGrantStorage,
+                        modifier = Modifier.widthIn(max = 420.dp)
+                    )
+                }
 
                 Spacer(Modifier.height(if (compact) 16.dp else 24.dp))
 
@@ -366,6 +467,53 @@ private fun BottomBar(onOpenSettings: () -> Unit, modifier: Modifier = Modifier)
             Spacer(Modifier.size(48.dp))
         }
         SettingsButton(onClick = onOpenSettings)
+    }
+}
+
+/**
+ * Banner compacto de permissão de armazenamento (fluxo de pasta SEM CÓPIA):
+ * explica por que o app precisa do "Acesso a todos os arquivos" e abre o
+ * painel do sistema quando tocado. Some sozinho quando a permissão é
+ * concedida (reavaliada a cada ON_RESUME).
+ */
+@Composable
+private fun StorageAccessBanner(
+    compact: Boolean,
+    onGrant: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = PortBranding.config.accent
+    androidx.compose.material3.Surface(
+        modifier = modifier,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+        color = Color(0x14FFFFFF),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = if (compact) {
+                    "Conceda o acesso a todos os arquivos para jogar direto da pasta, sem cópia."
+                } else {
+                    "Para usar a pasta do jogo SEM copiar nada para dentro do app, " +
+                        "conceda o \"Acesso a todos os arquivos\" e toque em Selecionar Pasta."
+                },
+                color = Color(0xFFC9CBD6),
+                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            TextButton(
+                onClick = onGrant,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 10.dp, vertical = 4.dp
+                )
+            ) {
+                Text("Conceder", color = accent)
+            }
+        }
     }
 }
 

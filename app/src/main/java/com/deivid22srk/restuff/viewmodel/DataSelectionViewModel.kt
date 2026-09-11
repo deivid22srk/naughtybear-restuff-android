@@ -4,9 +4,10 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
 import java.io.File
 import android.widget.Toast
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.deivid22srk.restuff.data.GamePaths
@@ -72,12 +73,20 @@ data class DataSelectionUiState(
  * ViewModel da tela de seleção de dados — arquitetura estado/UI separada:
  *
  *   SAF ISO (Activity)  ──▶  onIsoPicked()      ──▶  extração GDFX em IO ──▶ Found
- *   SAF pasta (Activity) ──▶  onFolderPicked()  ──▶  validação em IO      ──▶ Found
+ *   SAF pasta (Activity) ──▶  onFolderPicked()  ──▶  resolução do caminho ──▶ Found
  *   referência persistida ──▶ restauração silenciosa ──▶ UiState
  *
- * O ISO é lido via ParcelFileDescriptor (acesso aleatório seekable) e apenas
- * o CONTEÚDO do disco é extraído para o armazenamento privado do app — o
- * arquivo original nunca é copiado nem movido.
+ * FLUXO DE PASTA — SEM CÓPIA: o SAF (OpenDocumentTree) é usado apenas como
+ * seletor; a árvore escolhida é RESOLVIDA para o caminho real no
+ * armazenamento (/storage/emulated/0/...) e esse caminho é passado direto ao
+ * motor como game_data_root. Nada é copiado para dentro do app — o motor lê
+ * os arquivos onde estão (exige "Acesso a todos os arquivos", concedido pela
+ * UI antes do seletor; mesmo modelo dos emuladores/ports Android).
+ *
+ * O ISO continua sendo lido via ParcelFileDescriptor (acesso aleatório
+ * seekable) e o CONTEÚDO do disco é extraído UMA única vez para o
+ * armazenamento privado do app — o arquivo original nunca é copiado nem
+ * movido (um ISO não é montável pelo runtime: precisa da pasta extraída).
  */
 class DataSelectionViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -109,7 +118,23 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
 
     private fun restoreSavedSelection() {
         val app = getApplication<Application>()
-        // 1) Dados já extraídos (ou Default.xex de pasta) → pronto direto.
+        // 1) Pasta real (fluxo sem cópia): válida se o xex ainda está lá.
+        prefs.getString(KEY_GAME_ROOT_PATH, null)?.let { path ->
+            val dir = File(path)
+            val xex = if (dir.isDirectory) GamePaths.findXex(dir) else null
+            if (xex != null) {
+                _uiState.value = DataSelectionUiState(
+                    DataPhase.Found(
+                        folderUri = Uri.fromFile(dir).toString(),
+                        fileName = xex.name
+                    )
+                )
+                return
+            }
+            // Pasta removida/permissão perdida — limpa e cai para o fluxo ISO.
+            GamePaths.setGameRoot(app, null)
+        }
+        // 2) Dados já extraídos (ISO) → pronto direto.
         if (GamePaths.isGameDataReady(app) || GamePaths.hasRawXex(app)) {
             val isoUri = prefs.getString(KEY_ISO_URI, null)
             _uiState.value = DataSelectionUiState(
@@ -120,7 +145,7 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
             )
             return
         }
-        // 2) ISO salvo mas ainda não extraído → re-extrai silenciosamente.
+        // 3) ISO salvo mas ainda não extraído → re-extrai silenciosamente.
         val savedIso = prefs.getString(KEY_ISO_URI, null)
         if (savedIso != null) {
             startExtraction(Uri.parse(savedIso))
@@ -219,7 +244,7 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
     }
 
     // ------------------------------------------------------------------
-    // Fluxo pasta extraída (secundário)
+    // Fluxo pasta extraída (secundário) — SEM CÓPIA
     // ------------------------------------------------------------------
 
     /** Chamado pela Activity quando o SAF devolve a árvore escolhida. */
@@ -235,61 +260,99 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
             return
         }
         prefs.edit().putString(KEY_FOLDER_URI, treeUri.toString()).apply()
-        validateFolder(treeUri)
+
+        _uiState.value = DataSelectionUiState(DataPhase.Validating)
+        viewModelScope.launch {
+            val dir = withContext(Dispatchers.IO) { resolveTreePath(treeUri) }
+            if (dir == null || !dir.isDirectory) {
+                _uiState.value = DataSelectionUiState(DataPhase.NotFound)
+                Toast.makeText(
+                    getApplication(),
+                    "Não foi possível acessar a pasta selecionada. Escolha uma pasta " +
+                        "do armazenamento interno do aparelho.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val xex = withContext(Dispatchers.IO) { GamePaths.findXex(dir) }
+            if (xex == null) {
+                _uiState.value = DataSelectionUiState(DataPhase.NotFound)
+                Toast.makeText(
+                    getApplication(),
+                    "A pasta \"${dir.name}\" não contém o Default.xex na raiz. " +
+                        "Selecione a pasta extraída do jogo (a que tem o Default.xex).",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            // Válido: persiste o caminho REAL como game_data_root. Nada é
+            // copiado — o motor lê os arquivos direto de onde estão.
+            GamePaths.setGameRoot(app, dir.absolutePath)
+            _uiState.value = DataSelectionUiState(
+                DataPhase.Found(
+                    folderUri = Uri.fromFile(dir).toString(),
+                    fileName = xex.name
+                )
+            )
+        }
+    }
+
+    /**
+     * Resolve o caminho REAL de uma árvore SAF do provider de armazenamento
+     * local (com.android.externalstorage.documents):
+     *   content://…/tree/primary%3AGames%2FNaughtyBear
+     *     → volume "primary" + caminho "Games/NaughtyBear"
+     *     → /storage/emulated/0/Games/NaughtyBear
+     * Volumes secundários (cartão SD, id tipo "XXXX-XXXX") mapeiam para
+     * /storage/<id>. O retorno é nulo para providers que não expõem caminho
+     * POSIX (downloads/cloud) — esses não servem ao motor.
+     */
+    private fun resolveTreePath(treeUri: Uri): File? {
+        val docId = try {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        } catch (_: Exception) {
+            return null
+        } ?: return null
+        val sep = docId.indexOf(':')
+        if (sep <= 0) return null
+        val volume = docId.substring(0, sep)
+        val rel = docId.substring(sep + 1).replace('\\', '/').trim('/')
+        val base = when (volume) {
+            "primary" -> Environment.getExternalStorageDirectory() ?: return null
+            else -> File("/storage/$volume")
+        }
+        if (!base.isDirectory) return null
+        return if (rel.isEmpty()) base else File(base, rel)
     }
 
     /** Revalida a pasta atualmente persistida (ex.: arquivo chegou depois). */
     fun rescan() {
-        prefs.getString(KEY_FOLDER_URI, null)?.let { validateFolder(Uri.parse(it)) }
+        prefs.getString(KEY_GAME_ROOT_PATH, null)?.let { path ->
+            val dir = File(path)
+            if (dir.isDirectory) {
+                onFolderPathValidated(dir)
+                return
+            }
+        }
+        prefs.getString(KEY_FOLDER_URI, null)?.let { onFolderPicked(Uri.parse(it)) }
     }
 
-    /**
-     * TODO(validação): a checagem da pasta via SAF (GameDataScanner
-     * .findExpectedFile + DocumentFile.listFiles) foi REMOVIDA TEMPORARIAMENTE
-     * por performance — cada listFiles() do DocumentFile é uma rajada de IPCs
-     * de binder que trava a seleção em pastas grandes. O fluxo continua 100%
-     * funcional: a pasta é marcada como válida na hora, o conteúdo é copiado
-     * em background e o botão "Iniciar Jogo" só lança o motor quando o
-     * marcador local (.extract_ok) confirmar a cópia completa (verificação
-     * BARATA, em arquivo local, sem SAF). Reintroduzir a validação depois de
-     * forma otimizada (cache de listagem + checagem em background).
-     */
-    private fun validateFolder(uri: Uri) {
-        _uiState.value = DataSelectionUiState(
-            DataPhase.Found(folderUri = uri.toString(), fileName = "pasta extraída")
-        )
+    /** Persiste uma pasta já resolvida e válida (usado por rescan/restauração). */
+    private fun onFolderPathValidated(dir: File) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                copySafFolderToGameDir(uri)
+            val xex = withContext(Dispatchers.IO) { GamePaths.findXex(dir) }
+            if (xex == null) {
+                _uiState.value = DataSelectionUiState(DataPhase.NotFound)
+                return@launch
             }
+            GamePaths.setGameRoot(getApplication(), dir.absolutePath)
+            _uiState.value = DataSelectionUiState(
+                DataPhase.Found(
+                    folderUri = Uri.fromFile(dir).toString(),
+                    fileName = xex.name
+                )
+            )
         }
-    }
-
-    private fun copySafFolderToGameDir(treeUri: Uri) {
-        val app = getApplication<Application>()
-        val root = GamePaths.gameDir(app)
-        root.mkdirs()
-        val folder = DocumentFile.fromTreeUri(app, treeUri) ?: return
-        fun walk(src: DocumentFile, dst: File) {
-            for (child in src.listFiles()) {
-                if (child.isDirectory) {
-                    val sub = File(dst, child.name ?: continue)
-                    sub.mkdirs()
-                    walk(child, sub)
-                } else {
-                    val name = child.name ?: continue
-                    val target = File(dst, name)
-                    if (target.isFile && target.length() == child.length()) continue
-                    app.contentResolver.openInputStream(child.uri)?.use { input ->
-                        // Buffer de 1 MiB: o default do copyTo (8 KiB) tornava a
-                        // cópia via SAF dolorosamente lenta em pastas de jogo.
-                        target.outputStream().use { output -> input.copyTo(output, 1 shl 20) }
-                    }
-                }
-            }
-        }
-        walk(folder, root)
-        GamePaths.extractMarker(app).writeText("folder=$treeUri\n")
     }
 
     // ------------------------------------------------------------------
@@ -315,6 +378,7 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
             }
         }
         prefs.edit().remove(KEY_ISO_URI).remove(KEY_FOLDER_URI).apply()
+        GamePaths.setGameRoot(app, null)
         GamePaths.wipeGameData(app)
         _uiState.value = DataSelectionUiState(DataPhase.Idle)
     }
@@ -325,18 +389,31 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
 
     /** Clique no botão primário com dados prontos — entrega ao motor do port. */
     fun onStartGame() {
+        val app = getApplication<Application>()
         val phase = _uiState.value.phase
         if (phase !is DataPhase.Found) return
-        // Gate de integridade BARATO (arquivo local, zero SAF): só lança o
-        // motor com a extração/cópia 100% concluída — boot com dados
-        // incompletos = tela preta. Sem bloquear a UI com validação lenta.
-        if (!GamePaths.extractMarker(getApplication()).exists()) {
-            Toast.makeText(
-                getApplication(),
-                "Os dados do jogo ainda estão sendo preparados. Aguarde alguns " +
-                    "instantes e toque em Iniciar Jogo de novo.",
-                Toast.LENGTH_LONG
-            ).show()
+        // Gate BARATO (listagem POSIX local, zero SAF, zero IPC): o motor só
+        // lança com o entrypoint presente — boot sem Default.xex = tela preta.
+        val root = GamePaths.gameRoot(app)
+        if (GamePaths.findXex(root) == null) {
+            if (root == GamePaths.gameDir(app) &&
+                !GamePaths.extractMarker(app).exists()
+            ) {
+                // Fluxo ISO: a extração ainda não terminou.
+                Toast.makeText(
+                    app,
+                    "Os dados do jogo ainda estão sendo preparados. Aguarde alguns " +
+                        "instantes e toque em Iniciar Jogo de novo.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                Toast.makeText(
+                    app,
+                    "Default.xex não encontrado em ${root.absolutePath}. " +
+                        "Selecione a pasta do jogo novamente.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             return
         }
         onLaunchGame?.invoke(phase.folderUri, phase.fileName)
@@ -346,6 +423,7 @@ class DataSelectionViewModel(application: Application) : AndroidViewModel(applic
         const val PREFS_NAME = "port_screen_prefs"
         const val KEY_FOLDER_URI = "data_folder_uri"
         const val KEY_ISO_URI = "data_iso_uri"
+        const val KEY_GAME_ROOT_PATH = "game_root_path"
         const val MIN_FREE_BYTES = 8L * 1_000_000_000L // ~8 GB
     }
 }

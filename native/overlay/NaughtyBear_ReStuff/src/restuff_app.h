@@ -4,7 +4,12 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <filesystem>
+#include <string>
+#include <string_view>
 
 #if defined(__linux__) && !defined(__ANDROID__)
 // ANDROID PORT: os utilitários abaixo são desktop-Linux (execinfo/backtrace,
@@ -25,6 +30,7 @@
 #endif
 
 #include <rex/filesystem.h>
+#include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
 #include <rex/ui/imgui_drawer.h>
@@ -248,6 +254,85 @@ class RestuffApp : public rex::ReXApp {
   }
   // (DifficultyDialog and its Salsbury font loader were removed with the fork
   // feature -- see the note at the former include site.)
+
+  // ANDROID PORT: o pre-check do entrypoint em rex_app.cpp resolve
+  // game:\default.xex → <game_data_root>/default.xex e valida com
+  // std::filesystem::is_regular_file — CASE-SENSITIVE. Pastas de jogo do
+  // ReStuff (e a extração do ISO no app) trazem Default.xex (maiúsculo); no
+  // Windows/NTFS isso nunca deu problema, mas no Android (ext4/FUSE) o boot
+  // abortava com "Entrypoint XEX not found" → tela preta sem mensagem
+  // visível. O VFS do runtime (HostPathDevice::ResolvePath) JÁ tem fallback
+  // case-insensitive para todo o resto; faltava exatamente este arquivo.
+  // Este hook roda ANTES do pre-check (rex_app.cpp:263): reescreve o caminho
+  // virtual com o caso real dos componentes no host (listagem de diretório
+  // apenas quando o stat exato falha — barato).
+  void OnLoadXexImage(std::string& xex_image) override {
+#if defined(__ANDROID__)
+    namespace fs = std::filesystem;
+    const fs::path root = game_data_root();
+    std::error_code ec;
+    if (root.empty() || !fs::is_directory(root, ec)) return;
+
+    constexpr std::string_view kGameDevice = "game:\\";
+    constexpr std::string_view kDDevice = "d:\\";
+    std::string_view tail{xex_image};
+    if (tail.starts_with(kGameDevice)) {
+      tail.remove_prefix(kGameDevice.size());
+    } else if (tail.starts_with(kDDevice)) {
+      tail.remove_prefix(kDDevice.size());
+    }
+    if (tail.empty()) return;
+
+    // Resolve componente a componente (ex.: "default.xex" ou "a\\b.xex")
+    // comparando sem caso quando o nome exato não existe no host.
+    fs::path host = root;
+    std::string resolved;
+    size_t start = 0;
+    bool ok = true;
+    while (ok) {
+      const size_t slash = tail.find('\\', start);
+      const auto part_view = tail.substr(
+          start, slash == std::string_view::npos ? std::string_view::npos : slash - start);
+      std::string part(part_view);
+      if (!part.empty()) {
+        const fs::path exact = host / part;
+        if (fs::exists(exact, ec)) {
+          host = exact;
+        } else {
+          bool matched = false;
+          for (const auto& entry : fs::directory_iterator(host, ec)) {
+            const std::string name = entry.path().filename().string();
+            if (name.size() == part.size() &&
+                std::equal(name.begin(), name.end(), part.begin(), [](char a, char b) {
+                  return std::tolower(static_cast<unsigned char>(a)) ==
+                         std::tolower(static_cast<unsigned char>(b));
+                })) {
+              host = entry.path();
+              part = name;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            ok = false;
+            break;
+          }
+        }
+        if (!resolved.empty()) resolved += '\\';
+        resolved += part;
+      }
+      if (slash == std::string_view::npos) break;
+      start = slash + 1;
+    }
+
+    if (ok && !resolved.empty() && resolved != tail) {
+      xex_image = std::string(kGameDevice) + resolved;
+      REXLOG_INFO("[android] entrypoint resolvido no host: {}", xex_image);
+    }
+#else
+    (void)xex_image;
+#endif
+  }
 
   // Default the game data root to the project's assets folder when
   // --game_data_root isn't passed on the command line. The new SDK leaves

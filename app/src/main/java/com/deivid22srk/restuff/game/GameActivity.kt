@@ -26,7 +26,10 @@ class GameActivity : SDLActivity() {
     override fun getArguments(): Array<String> {
         val settings = PortSettingsRepository(this).load()
         val filesDir = filesDir.absolutePath
-        val gameRoot = GamePaths.gameDir(this).absolutePath
+        // game_data_root: pasta REAL do usuário (fluxo de pasta, sem cópia —
+        // o motor lê via POSIX com All Files Access) ou a pasta extraída do
+        // ISO no armazenamento privado. Decidido pelo GamePaths.gameRoot.
+        val gameRoot = GamePaths.gameRoot(this).absolutePath
         val savesRoot = GamePaths.savesDir(this).absolutePath
         val cacheRoot = GamePaths.cacheDir(this).absolutePath
         val configPath = GamePaths.configFile(this).absolutePath

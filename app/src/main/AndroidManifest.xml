@@ -16,10 +16,25 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
 
+    <!--
+      Fluxo de pasta SEM CÓPIA: o motor (librestuff.so) abre os arquivos do
+      jogo direto do armazenamento do usuário via POSIX (game_data_root é o
+      caminho real). Isso exige "Acesso a todos os arquivos" (Android 11+,
+      concedido via Settings — igual aos emuladores/ports). Em Android 9/10 o
+      acesso direto a caminhos usa READ_EXTERNAL_STORAGE +
+      requestLegacyExternalStorage.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        android:minSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
+        android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
