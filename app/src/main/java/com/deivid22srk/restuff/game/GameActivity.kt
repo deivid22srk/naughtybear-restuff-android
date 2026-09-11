@@ -115,9 +115,13 @@ class GameActivity : SDLActivity() {
             }
         )
 
-        // Formato estável lido por android_main.cpp (parse ArgLine).
+        // Formato estável lido por android_main.cpp (parse explícito) e pelo
+        // cvar::Init do SDK (flags --<cvar> com underscore: game_data_root,
+        // user_data_root). As opções do motor (fps_cap, vblank_hz,
+        // unlock_all, log_*) chegam via restuff.toml — gerado acima — que é
+        // a via oficial de config do restuff; nada é passado "por garantia"
+        // em flags que ninguém lê.
         return arrayOf(
-            "--rex-android=1",
             "--app-files-dir=$filesDir",
             "--native-lib-dir=${applicationInfo.nativeLibraryDir}",
             "--game_data_root=$gameRoot",
@@ -125,11 +129,7 @@ class GameActivity : SDLActivity() {
             "--cache_root=$cacheRoot",
             "--config=$configPath",
             "--log-level=$logLevel",
-            "--unlock-all=${settings.unlockAllCheat}",
             "--fps60=${settings.unlock60Fps}",
-            "--fps-cap=${settings.fpsLimit.fps}",
-            "--overlay-opacity=${settings.overlayOpacity}",
-            "--pad-scale=${settings.overlayScale}",
         ) + (logFile?.let { arrayOf("--log-file=$it") } ?: emptyArray())
     }
 

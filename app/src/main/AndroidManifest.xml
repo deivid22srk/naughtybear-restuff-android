@@ -41,7 +41,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PortScreen">
 
-        <!-- Launcher / tela de seleção de dados (template port-screen) -->
+        <!-- Launcher / tela de seleção de dados do port -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

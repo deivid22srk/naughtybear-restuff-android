@@ -1,31 +1,16 @@
 /*
  * ============================================================================
- *  PORT BRANDING CONFIG
- *  O ÚNICO ARQUIVO QUE UM NOVO PORT PRECISA EDITAR.
+ *  BRANDING DO PORT NAUGHTY BEAR RESTUFF
  * ============================================================================
  *
- *  Este template é 100% genérico: nenhuma tela, cor, texto, partícula ou
- *  referência de arte está fixada no código da interface. Tudo o que dá
- *  identidade a um port — nome, paleta, arte de fundo, arquivos de dados
- *  esperados, partículas ambiente, textos, links de créditos — vem daqui.
+ * Identidade visual e textual do port: nome, paleta âmbar do urso, arte de
+ * fundo (bg_cinematic.jpg — floresta noturna do jogo), marca vetorial do
+ * urso "naughty" (ic_logo_mark.xml), arquivos de dados esperados
+ * (Default.xex / .iso da Gold Edition de Xbox 360) e links do portador.
  *
- *  COMO ADAPTAR PARA UM NOVO PORT (resumo; guia completo no README.md):
- *
- *    1. Edite os valores do objeto [PortBranding] lá embaixo.
- *    2. Troque  app/src/main/res/drawable-nodpi/bg_cinematic.jpg  pela arte
- *       de fundo do seu port (mesmo nome de arquivo) — ou defina
- *       `backgroundArtRes = null` para um fundo procedural sem imagem.
- *    3. Troque  res/drawable/ic_logo_mark.xml  pelo logotipo do port (SVG
- *       convertido para VectorDrawable) — ou desative com `showLogo = false`.
- *    4. Ajuste [PortBrandingConfig.expectedDataFiles] para os arquivos que
- *       o seu motor procura (ex.: "default.xex", "game.iso", "data.pak").
- *    5. Ajuste [PortBrandingConfig.links] com os links do portador
- *       (YouTube, GitHub, Telegram e repositório do projeto base).
- *    6. Conecte a inicialização do seu motor em
- *       [com.deivid22srk.restuff.viewmodel.DataSelectionViewModel.onStartGame].
- *
- *  NADA MAIS precisa ser tocado. Layout, animações, acessibilidade e fluxo
- *  SAF permanecem intactos entre ports.
+ * A arquitetura continua paramétrica (nada de cor/texto fixado no layout das
+ * telas): quem forjar um novo port reaproveita o esqueleto trocando apenas
+ * os valores do objeto [PortBranding] e os dois recursos gráficos acima.
  * ============================================================================
  */
 package com.deivid22srk.restuff.config
@@ -250,11 +235,11 @@ data class PortBrandingConfig(
 
 /**
  * ===========================================================================
- *  VALORES DO PORT — EDITE APENAS ESTE BLOCO
+ *  VALORES DO PORT NAUGHTY BEAR RESTUFF
  * ===========================================================================
- *  Os valores abaixo formam o "demo neutro" do template: paleta âmbar sobre
- *  azul-noite, brasas subindo e detecção de "default.xex" como exemplo.
- *  Substitua por dados do seu port (veja o passo a passo no topo do arquivo).
+ *  Paleta âmbar do urso de pelúcia sobre a floresta noturna da arte de
+ *  fundo, brasas subindo (ecoam os vagalumes/brasas da arte) e detecção do
+ *  Default.xex / imagem .iso da Gold Edition (Xbox 360).
  * ===========================================================================
  */
 object PortBranding {
@@ -312,7 +297,7 @@ object PortBranding {
         // ---- Tela de configurações ----------------------------------------
         labelSettingsTitle = "Configurações",
         labelSettingsSubtitle = "Motor ReStuff (rexglue) · ajustes do port",
-        labelSettingsFooter = "As opções de vídeo/controles são aplicadas ao motor na próxima inicialização do jogo.",
+        labelSettingsFooter = "Motor, driver e controles são aplicados na próxima inicialização do jogo; efeitos da tela inicial valem na hora.",
         labelClearSelection = "Limpar seleção salva",
 
         // ---- Créditos / links do portador ----------------------------------

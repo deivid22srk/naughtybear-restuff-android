@@ -1,7 +1,5 @@
 package com.deivid22srk.restuff.ui.components
 
-import android.app.ActivityManager
-import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,25 +16,36 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.deivid22srk.restuff.config.PortBranding
+import com.deivid22srk.restuff.data.GpuDriverManager
 
 /**
- * Chip técnico do canto inferior esquerdo: motor (Compose), versão de GLES
- * e ABI do aparelho — o "canto de credibilidade" típico de menus AAA.
- * Informação real do dispositivo, calculada uma única vez.
+ * Chip técnico do canto inferior esquerdo: a PILHA REAL do port — motor
+ * RESTUFF (librestuff.so, rexglue-SDK), renderer Vulkan fixo do
+ * recompilador, driver customizado Turnip quando importado via
+ * AdrenoTools (tela de Configurações) e o ABI do aparelho.
+ *
+ * Nota: o jogo não usa OpenGL ES — a versão de GLES do aparelho é
+ * irrelevante aqui e por isso não é exibida. O selo TURNIP reflete o
+ * driver CONFIGURADO (active.txt); se o último boot falhou em carregá-lo
+ * (custom_failed), o selo é omitido — o desfecho real fica no Diagnóstico.
  */
 @Composable
 fun TechStatusChip(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val info = remember {
-        val gl = try {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            am.deviceConfigurationInfo?.glEsVersion ?: "GLES"
-        } catch (_: Exception) {
-            "GLES"
-        }
         val abi = Build.SUPPORTED_ABIS.firstOrNull()?.uppercase() ?: ""
-        listOf("COMPOSE", "GLES $gl", abi).joinToString("  ·  ")
+        // Driver Vulkan customizado (padrão AdrenoTools/Turnip) configurado
+        // e carregado com sucesso no último boot? (null = nunca bootou —
+        // mostra o selo se há driver ativo; vulkan_instance.cpp escreve o
+        // desfecho em files/drivers/last_boot.txt.)
+        val hasCustomDriver = try {
+            GpuDriverManager.activeId(context) != null &&
+                GpuDriverManager.lastBootOutcome(context)?.status != "custom_failed"
+        } catch (_: Exception) {
+            false
+        }
+        val renderer = if (hasCustomDriver) "VULKAN · TURNIP" else "VULKAN"
+        listOf("RESTUFF", renderer, abi).joinToString("  ·  ")
     }
 
     Box(
