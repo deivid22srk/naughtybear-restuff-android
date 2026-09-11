@@ -41,7 +41,7 @@ sealed interface DataPhase {
     data class Found(
         val folderUri: String,
         val fileName: String
-    )
+    ) : DataPhase
 
     /** A permissão persistida foi revogada ou a escolha falhou. */
     data object PermissionError : DataPhase
