@@ -43,6 +43,7 @@
 // Port Android (naughtybear-restuff-android): crash handler nativo — ver
 // InstallCrashHandler/RestuffCrashHandler abaixo.
 #include <cerrno>
+#include <cstdint>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -82,7 +83,7 @@ struct UnwindState {
   size_t skip;
 };
 
-_Unwind_Reason_code CrashUnwindCallback(struct _Unwind_Context* context, void* arg) {
+_Unwind_Reason_Code CrashUnwindCallback(struct _Unwind_Context* context, void* arg) {
   auto* state = static_cast<UnwindState*>(arg);
   if (state->skip > 0) {
     --state->skip;
