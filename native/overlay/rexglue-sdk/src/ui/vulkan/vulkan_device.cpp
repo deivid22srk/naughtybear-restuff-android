@@ -32,11 +32,22 @@ REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 // Apple Silicon / MoltenVK does not expose geometryShader or fillModeNonSolid;
 // default both to false on macOS so the device can still be selected.
-REXCVAR_DEFINE_BOOL(vulkan_require_geometry_shader, !REX_PLATFORM_MAC, "UI/Vulkan",
+// Port Android (naughtybear-restuff-android): idem em GPUs de telefone — nem
+// Adreno, nem Mali, nem Turnip expõem geometryShader em Vulkan (e
+// fillModeNonSolid é irregular), então manter a exigência como TRUE
+// rejeitava TODOS os physical devices em aparelhos reais:
+// VulkanDevice::CreateIfSupported retornava nullptr → VulkanProvider falhava
+// → SetupPresentation falhava → boot abortava com tela preta. O renderer
+// nativo do ReStuff nunca usa geometry shaders (0 referências em
+// native_vk.cpp) e os caminhos de fallback (emulação de primitivas / fill
+// sólido) estão prontos no SDK — command_processor/primitive_processor.
+REXCVAR_DEFINE_BOOL(vulkan_require_geometry_shader,
+                    !(REX_PLATFORM_MAC || REX_PLATFORM_ANDROID), "UI/Vulkan",
                     "Require geometryShader support for Vulkan GPU emulation (disable to allow "
                     "fallback primitive emulation paths)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid, !REX_PLATFORM_MAC, "UI/Vulkan",
+REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid,
+                    !(REX_PLATFORM_MAC || REX_PLATFORM_ANDROID), "UI/Vulkan",
                     "Require fillModeNonSolid support for Vulkan GPU emulation (disable to "
                     "allow fallback to solid fill for line/point polygon modes)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);

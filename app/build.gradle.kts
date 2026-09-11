@@ -78,6 +78,15 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            // OBRIGATÓRIO p/ AdrenoTools (driver Turnip custom): os hooks
+            // (libmain_hook.so etc.) precisam existir COMO ARQUIVOS em
+            // nativeLibraryDir — com descompactação desligada o Android lê
+            // os .so direto do APK e o hookLibDir do adrenotools não aponta
+            // para arquivos reais (o hook falha e o driver do sistema é
+            // usado em silêncio, ou 0 devices são enumerados).
+            useLegacyPackaging = true
+        }
     }
 }
 

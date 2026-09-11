@@ -1,10 +1,15 @@
 package com.deivid22srk.restuff.game
 
+import android.os.Environment
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.deivid22srk.restuff.data.GamePaths
 import com.deivid22srk.restuff.settings.PortSettingsRepository
 import org.libsdl.app.SDLActivity
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Activity do jogo: estende o SDLActivity do SDL3 (classes Java embutidas de
@@ -22,6 +27,38 @@ class GameActivity : SDLActivity() {
 
     private var virtualPad: VirtualGamepadView? = null
 
+    /**
+     * Resolve o diretório de logs no STORAGE PÚBLICO
+     * (/storage/emulated/<user>/Naughty Bear ReStuff/logs), criando-o se
+     * necessário e PROBANDO gravabilidade (arquivo .probe). Retorna null se
+     * indisponível (permissão "Todos os arquivos" não concedida no Android
+     * 11+, storage desmontado) — nesse caso o motor usa o storage privado.
+     *
+     * Nota: MANAGE_EXTERNAL_STORAGE já é pedida pela tela de seleção de dados
+     * (DataSelectionScreen) para o fluxo de pasta sem cópia — aqui só se
+     * CONFERE, com fallback silencioso. Environment.getExternalStorageDirectory()
+     * resolve /storage/emulated/<userId> (não hardcode do usuário 0).
+     */
+    private fun resolvePublicLogDir(): File? = runCatching {
+        if (Environment.getExternalStorageState() != Environment.MEDIA_MOUNTED) return@runCatching null
+        val dir = File(Environment.getExternalStorageDirectory(), "Naughty Bear ReStuff/logs")
+        if (!dir.isDirectory && !dir.mkdirs()) return@runCatching null
+        val probe = File(dir, ".probe")
+        probe.writeText("ok")
+        probe.delete()
+        dir
+    }.getOrNull()
+
+    /** Mantém apenas os [keep] logs mais recentes no diretório público. */
+    private fun pruneOldLogs(dir: File, keep: Int) {
+        runCatching {
+            dir.listFiles { f -> f.isFile && f.name.startsWith("restuff_") && f.name.endsWith(".log") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(keep)
+                ?.forEach { it.delete() }
+        }
+    }
+
     /** Argumentos passados ao SDL_main (argv do motor). */
     override fun getArguments(): Array<String> {
         val settings = PortSettingsRepository(this).load()
@@ -34,19 +71,47 @@ class GameActivity : SDLActivity() {
         val cacheRoot = GamePaths.cacheDir(this).absolutePath
         val configPath = GamePaths.configFile(this).absolutePath
 
+        // --- Log detalhado persistido (requisito do port) -----------------
+        // Storage público quando gravável (com retenção de 10 sessões);
+        // senão cai para o storage privado (log_file vazio => numeração
+        // sequencial automática em <files>/logs — nunca perde o log).
+        val publicLogDir = resolvePublicLogDir()
+        if (publicLogDir != null) pruneOldLogs(publicLogDir, keep = 10)
+        val logLevel = if (settings.detailedLogs) "debug" else "info"
+        val logFile: String? = publicLogDir?.let {
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            File(it, "restuff_$stamp.log").absolutePath
+        }
+        // Onde o log desta sessão está (para a tela de Diagnóstico exibir):
+        // "publico:<caminho>" ou "privado" (auto-numerado em <files>/logs).
+        runCatching {
+            File(filesDir, "last_log_location.txt").writeText(
+                logFile?.let { "publico:$it" } ?: "privado"
+            )
+        }
+
         // Gera o restuff.toml do dispositivo ANTES do SDL_main ler o config.
-        // log_file vazio => saída para logcat (app_name "restuff").
+        // log_file aponta para o arquivo público da sessão (ou vazio =>
+        // auto-numeração no storage privado do app).
         GamePaths.ensureDirs(this)
         GamePaths.configFile(this).writeText(
             buildString {
                 appendLine("# restuff.toml — gerado pelo port Android")
-                appendLine("log_file = \"\"")
+                // Caminho com espaços é válido em TOML basic string.
+                appendLine("log_file = \"${logFile ?: ""}\"")
+                appendLine("log_level = \"$logLevel\"")
                 appendLine("log_flush_interval = 1")
                 appendLine("fullscreen = false")
                 appendLine("fps_cap = ${settings.fpsLimit.fps}")
                 appendLine("vblank_hz = ${settings.vblankHz}")
                 appendLine("use_translated_shaders = true")
                 appendLine("unlock_all = ${settings.unlockAllCheat}")
+                // GPUs móveis não expõem geometryShader (nem Turnip nem
+                // Adreno/Mali) — exigir rejeita TODOS os devices → tela
+                // preta. O default nativo também foi corrigido; isto é o
+                // belt-and-suspenders (regenerado a cada boot).
+                appendLine("vulkan_require_geometry_shader = false")
+                appendLine("vulkan_require_fill_mode_non_solid = false")
             }
         )
 
@@ -54,16 +119,18 @@ class GameActivity : SDLActivity() {
         return arrayOf(
             "--rex-android=1",
             "--app-files-dir=$filesDir",
+            "--native-lib-dir=${applicationInfo.nativeLibraryDir}",
             "--game_data_root=$gameRoot",
             "--user_data_root=$savesRoot",
             "--cache_root=$cacheRoot",
             "--config=$configPath",
+            "--log-level=$logLevel",
             "--unlock-all=${settings.unlockAllCheat}",
             "--fps60=${settings.unlock60Fps}",
             "--fps-cap=${settings.fpsLimit.fps}",
             "--overlay-opacity=${settings.overlayOpacity}",
             "--pad-scale=${settings.overlayScale}",
-        )
+        ) + (logFile?.let { arrayOf("--log-file=$it") } ?: emptyArray())
     }
 
     /** SDL3 estático dentro de librestuff.so — um único load. */

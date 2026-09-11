@@ -2,6 +2,7 @@ package com.deivid22srk.restuff.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -93,8 +94,10 @@ object GpuDriverManager {
 
     /**
      * Importa um driver Turnip (.zip) escolhido via SAF. Valida zip, meta.json
-     * e a biblioteca .so (incluindo assinatura ELF). Retorna o driver
-     * importado. Lança [DriverImportException] com mensagem amigável.
+     * e a biblioteca .so (assinatura ELF + arquitetura arm64 + tipo), extrai
+     * TODOS os .so (companheiros com nomes originais — pacotes adpkg dependem
+     * deles) e persiste metadados. Retorna o driver importado. Lança
+     * [DriverImportException] com mensagem amigável.
      */
     fun importFromZip(context: Context, zipUri: Uri): GpuDriver {
         val dir = driversDir(context).apply { mkdirs() }
@@ -153,6 +156,17 @@ object GpuDriverManager {
             .ifEmpty { meta.optString("version", "") }.ifEmpty { "?" }
         val vendor = meta.optString("vendor", "")
 
+        // [evidência] minApi dos meta.json reais (K11MCH1 26.0.0 = 27;
+        // adpkg 849 = 35): respeitar evita importar driver que o adrenotools
+        // não consegue carregar no aparelho.
+        val minApi = meta.optInt("minAPI", meta.optInt("minApi", 0))
+        if (minApi > 0 && minApi > Build.VERSION.SDK_INT) {
+            throw DriverImportException(
+                "Este driver exige Android $minApi (minAPI do meta.json); o " +
+                    "aparelho está no Android ${Build.VERSION.SDK_INT}."
+            )
+        }
+
         // ---- Localiza a biblioteca .so do driver ------------------------
         // Caminhos reais variam: raiz do zip, lib/ARM64-v8A/, arm64-v8a/ etc.
         // Prioridade: basename == libName (case-insensitive) → .so com
@@ -178,25 +192,42 @@ object GpuDriverManager {
             )
         }
 
-        // ---- Passada 2: extrai o .so validando a assinatura ELF ---------
+        // ---- Passada 2: extrai TODOS os .so (nomes ORIGINAIS) ------------
+        // O carregador real (libadrenotools) abre o driver pelo NOME no
+        // diretório dele num namespace próprio — e pacotes multi-arquivo
+        // (adpkg) têm companheiros (libgsl.so, libadreno_utils.so, not*.so)
+        // resolvidos por DT_NEEDED no MESMO diretório. Renomear tudo para
+        // "driver.so" quebrava o adpkg e dispensava os companheiros.
+        // A biblioteca principal mantém o basename do zip (alvo da seleção
+        // acima) e recebe validação completa de ELF/arm64/ET_DYN.
         val id = newDriverId(displayName, version)
         val destDir = File(dir, id).apply { mkdirs() }
-        val destSo = File(destDir, "driver.so")
+        val destSo = File(destDir, target.substringAfterLast('/'))
         try {
             context.contentResolver.openInputStream(zipUri)?.use { input ->
                 ZipInputStream(input.buffered(DEFAULT_BUFFER)).use { zip ->
                     while (true) {
                         val e = zip.nextEntry ?: break
-                        if (e.name == target) {
-                            copySoValidating(zip, destSo)
-                            break
+                        if (!e.isDirectory && e.name.endsWith(".so", ignoreCase = true)) {
+                            val dest = File(destDir, e.name.substringAfterLast('/'))
+                            if (dest.name == destSo.name) {
+                                copySoValidating(zip, dest, validateArch = true)
+                            } else {
+                                copySoValidating(zip, dest, validateArch = false)
+                            }
                         }
                         zip.closeEntry()
                     }
                 }
             } ?: throw IOException("SAF fechou o stream")
+            if (!destSo.isFile) {
+                throw DriverImportException(
+                    "Biblioteca principal ('$target') não foi extraída — zip incompleto."
+                )
+            }
         } catch (e: Exception) {
             destDir.deleteRecursively()
+            if (e is DriverImportException) throw e
             throw DriverImportException("Falha ao extrair o driver: ${e.message ?: "erro de E/S"}")
         }
 
@@ -229,13 +260,18 @@ object GpuDriverManager {
         return driver
     }
 
-    /** Copia o .so verificando os 4 bytes mágicos ELF (0x7F 'E' 'L' 'F'). */
-    private fun copySoValidating(zip: ZipInputStream, dest: File) {
+    /**
+     * Copia um .so do zip validando: magic ELF (0x7F 'E' 'L' 'F') sempre;
+     * quando [validateArch], também classe ELF64, máquina EM_AARCH64 (183) e
+     * tipo ET_DYN (3) — drivers x86_64 ou objetos relocáveis eram aceitos
+     * antes e falhavam só no boot, sem mensagem útil.
+     */
+    private fun copySoValidating(zip: ZipInputStream, dest: File, validateArch: Boolean) {
         dest.outputStream().use { out ->
-            val header = ByteArray(4)
+            val header = ByteArray(20)
             var read = 0
-            while (read < 4) {
-                val n = zip.read(header, read, 4 - read)
+            while (read < 20) {
+                val n = zip.read(header, read, 20 - read)
                 if (n < 0) throw DriverImportException("Biblioteca do driver está truncada.")
                 read += n
             }
@@ -245,6 +281,17 @@ object GpuDriverManager {
                 throw DriverImportException(
                     "A biblioteca dentro do .zip não é um binário ELF válido (driver incompatível)."
                 )
+            }
+            if (validateArch) {
+                val eiClass = header[4].toInt() and 0xFF            // 2 = ELF64
+                val eType = ((header[17].toInt() and 0xFF) shl 8) or (header[16].toInt() and 0xFF)
+                val eMachine = ((header[19].toInt() and 0xFF) shl 8) or (header[18].toInt() and 0xFF)
+                if (eiClass != 2 || eMachine != 183 || eType != 3) {
+                    throw DriverImportException(
+                        "Biblioteca principal não é um ELF arm64-v8a compartilhado " +
+                            "(classe=$eiClass máquina=$eMachine tipo=$eType) — driver incompatível."
+                    )
+                }
             }
             out.write(header)
             zip.copyTo(out, DEFAULT_BUFFER)
@@ -270,6 +317,25 @@ object GpuDriverManager {
     fun setActive(context: Context, id: String) {
         val driver = readDriverJson(File(driversDir(context), id))
             ?: throw DriverImportException("Driver não encontrado.")
+        // [evidência] seleção SEM validação aceitava .so apagado/corrompido
+        // (commit 3a8c08c) — confere existência + magic ELF antes de ativar.
+        val so = File(driver.libPath)
+        if (!so.isFile) {
+            throw DriverImportException(
+                "Arquivo do driver não existe (${so.name}) — importe-o novamente."
+            )
+        }
+        so.inputStream().use { input ->
+            val magic = ByteArray(4)
+            if (input.read(magic) < 4 ||
+                !(magic[0] == 0x7F.toByte() && magic[1] == 'E'.code.toByte() &&
+                    magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte())
+            ) {
+                throw DriverImportException(
+                    "Arquivo do driver não é um ELF válido — importe-o novamente."
+                )
+            }
+        }
         activeFile(context).writeText("id=$id\nlib=${driver.libPath}\n")
     }
 
@@ -296,6 +362,46 @@ object GpuDriverManager {
         if (activeId(context) == id) clearActive(context)
         File(driversDir(context), id).deleteRecursively()
     }
+
+    // ----------------------------------------------------------------------
+    // Diagnóstico do último boot (escrito por vulkan_instance.cpp)
+    // ----------------------------------------------------------------------
+
+    /** Desfecho do carregamento do driver no último boot do jogo. */
+    data class DriverBootOutcome(
+        val status: String,   // custom_ok | custom_failed | system
+        val driver: String,
+        val error: String,
+    )
+
+    /**
+     * Lê files/drivers/last_boot.txt (formato chave=valor). null se o jogo
+     * ainda não bootou desde a instalação.
+     */
+    fun lastBootOutcome(context: Context): DriverBootOutcome? {
+        val f = File(driversDir(context), "last_boot.txt")
+        if (!f.isFile) return null
+        return runCatching {
+            val map = f.readLines()
+                .mapNotNull { line ->
+                    val idx = line.indexOf('=')
+                    if (idx > 0) line.substring(0, idx) to line.substring(idx + 1) else null
+                }
+                .toMap()
+            DriverBootOutcome(
+                status = map["status"] ?: "?",
+                driver = map["driver"] ?: "-",
+                error = map["error"] ?: "-",
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Local do log da última sessão (escrito por GameActivity):
+     * "publico:<caminho>" ou "privado".
+     */
+    fun lastLogLocation(context: Context): String? =
+        File(context.filesDir, "last_log_location.txt").takeIf { it.isFile }?.readText()
 
     private const val DEFAULT_BUFFER = 1 shl 16 // 64 KiB
 }

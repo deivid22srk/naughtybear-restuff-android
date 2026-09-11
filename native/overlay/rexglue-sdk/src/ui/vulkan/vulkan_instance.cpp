@@ -17,6 +17,16 @@
 #include <utility>
 #include <vector>
 
+#if REX_PLATFORM_ANDROID
+// Port Android (naughtybear-restuff-android): integração AdrenoTools — ver
+// TryLoadCustomAdrenoDriver abaixo.
+#include <cstdio>
+#include <cstring>
+#include <dlfcn.h>
+#include <filesystem>
+#include <system_error>
+#endif
+
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/platform.h>
@@ -32,6 +42,123 @@ REXCVAR_DEFINE_BOOL(vulkan_log_debug_messages, true, "UI/Vulkan", "Log Vulkan de
 namespace rex {
 namespace ui {
 namespace vulkan {
+
+#if REX_PLATFORM_ANDROID
+namespace {
+
+// Escreve o desfecho do boot do driver para consumo da UI (Configurações →
+// Diagnóstico): <files>/drivers/last_boot.txt. Falhas de escrita são
+// silenciosas — diagnóstico é best-effort, nunca derruba o boot.
+void WriteDriverBootOutcome(const char* status, const char* driver, const char* error) {
+  const char* files_dir = std::getenv("REX_ANDROID_FILES_DIR");
+  if (files_dir == nullptr || files_dir[0] == '\0') {
+    return;
+  }
+  char path[512];
+  if (std::snprintf(path, sizeof(path), "%s/drivers/last_boot.txt", files_dir) >=
+      static_cast<int>(sizeof(path))) {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+  if (FILE* f = std::fopen(path, "w")) {
+    std::fprintf(f, "status=%s\ndriver=%s\nerror=%s\n", status,
+                 driver ? driver : "-", error ? error : "-");
+    std::fclose(f);
+  }
+}
+
+// Port Android (naughtybear-restuff-android):
+// Carrega o driver customizado (padrão AdrenoTools/Turnip) pelo caminho
+// CORRETO — via libadrenotools — em vez do dlopen direto do .so.
+//
+// [evidência] O dlopen direto NUNCA funcionou com drivers reais:
+//  - Turnip HAL (K11MCH1/AdrenoToolsDrivers, ex.: vulkan.ad07xx.so): exporta
+//    apenas `HMI` e depende de libcutils.so/libhardware.so — bibliotecas
+//    NÃO públicas para processos de app (public.libraries) → dlopen falha
+//    com "library libcutils.so not found" → fallback silencioso para o
+//    driver do sistema.
+//  - ICD (Winlator, libvulkan_freedreno.so): exporta vk_icd* e NÃO
+//    vkGetInstanceProcAddr/vkDestroyInstance → GetSymbol retornava nulo →
+//    VulkanInstance::Create retornava nullptr SEM fallback → boot morto.
+//
+// O libadrenotools (bylaws, BSD-2) resolve os dois casos: devolve o handle
+// do LOADER do sistema (/system/lib64/libvulkan.so) numa instância única,
+// com hooks (libmain_hook) que interceptam a abertura do driver pelo loader
+// e a redirecionam para o .so customizado num namespace ligado ao sphal —
+// onde as dependências do driver (libcutils/libhardware/libgsl...) resolvem.
+// O handle devolvido exporta vkGetInstanceProcAddr de verdade, então todo o
+// restante deste Create() funciona sem mudanças.
+//
+// Requisitos (garantidos pelo port): hooks construídos e empacotados no APK
+// (useLegacyPackaging=true) e REX_ANDROID_NATIVE_LIB_DIR apontando para o
+// nativeLibraryDir do app.
+bool TryLoadCustomAdrenoDriver(platform::DynamicLibrary& loader, const char* custom_path) {
+  const char* native_lib_dir = std::getenv("REX_ANDROID_NATIVE_LIB_DIR");
+  if (native_lib_dir == nullptr || native_lib_dir[0] == '\0') {
+    REXLOG_ERROR(
+        "Vulkan: driver customizado solicitado ('{}') mas o launcher não "
+        "informou --native-lib-dir (hooks do AdrenoTools indisponíveis); "
+        "usando o driver do sistema",
+        custom_path);
+    WriteDriverBootOutcome("custom_failed", custom_path, "missing --native-lib-dir");
+    return false;
+  }
+
+  std::string adrenotools_path = std::string(native_lib_dir) + "/libadrenotools.so";
+  void* adrenotools = dlopen(adrenotools_path.c_str(), RTLD_NOW);
+  if (adrenotools == nullptr) {
+    const char* err = dlerror();
+    REXLOG_ERROR("Vulkan: falha ao carregar '{}': {}", adrenotools_path,
+                 err ? err : "motivo desconhecido");
+    WriteDriverBootOutcome("custom_failed", custom_path,
+                           err ? err : "libadrenotools dlopen failed");
+    return false;
+  }
+
+  using OpenLibvulkanFn = void* (*)(int, int, const char*, const char*, const char*,
+                                    const char*, const char*, void**);
+  auto open_libvulkan = reinterpret_cast<OpenLibvulkanFn>(
+      dlsym(adrenotools, "adrenotools_open_libvulkan"));
+  if (open_libvulkan == nullptr) {
+    REXLOG_ERROR("Vulkan: adrenotools_open_libvulkan ausente em '{}'", adrenotools_path);
+    WriteDriverBootOutcome("custom_failed", custom_path, "adrenotools_open_libvulkan missing");
+    return false;
+  }
+
+  // Dir com barra final: o adrenotools concatena dir + nome SEM separador
+  // (stat + ld_library_path do namespace).
+  std::filesystem::path driver_fs_path(custom_path);
+  std::string driver_dir = driver_fs_path.parent_path().string();
+  if (!driver_dir.empty() && driver_dir.back() != '/') {
+    driver_dir += '/';
+  }
+  std::string driver_name = driver_fs_path.filename().string();
+
+  constexpr int kAdrenoToolsDriverCustom = 1 << 0;  // ADRENOTOOLS_DRIVER_CUSTOM
+
+  void* handle = open_libvulkan(RTLD_NOW, kAdrenoToolsDriverCustom, nullptr,
+                                native_lib_dir, driver_dir.c_str(), driver_name.c_str(),
+                                nullptr, nullptr);
+  if (handle == nullptr) {
+    REXLOG_ERROR(
+        "Vulkan: AdrenoTools não conseguiu abrir o driver customizado '{}' "
+        "(detalhes no logcat, tag 'hook_impl'); usando o driver do sistema",
+        custom_path);
+    WriteDriverBootOutcome("custom_failed", custom_path,
+                           "adrenotools_open_libvulkan failed (see hook_impl logcat)");
+    return false;
+  }
+
+  loader.Adopt(handle);
+  REXLOG_INFO("Vulkan: driver customizado ATIVO via AdrenoTools: {}{}", driver_dir,
+              driver_name);
+  WriteDriverBootOutcome("custom_ok", custom_path, "-");
+  return true;
+}
+
+}  // namespace
+#endif  // REX_PLATFORM_ANDROID
 
 std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
                                                        const bool try_enable_validation) {
@@ -79,29 +206,51 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
 #else
   // Port Android (naughtybear-restuff-android): driver Vulkan customizado no
   // padrão AdrenoTools (Turnip/Mesa). O Driver Manager do app exporta
-  // REX_VULKAN_LOADER_PATH com o caminho absoluto do .so importado; o dlopen
-  // dele ANTES do loader do sistema faz TODA a stack Vulkan do motor
-  // (instance → device → swapchain) rodar sobre o driver escolhido. Falha no
-  // dlopen → cai para o driver do sistema (nunca crasha o app).
+  // REX_VULKAN_LOADER_PATH com o caminho absoluto do .so importado, ANTES de
+  // qualquer init gráfico (android_main.cpp). Falha em qualquer etapa é
+  // logada com o motivo real e cai para o driver do sistema (nunca crasha
+  // o app). [evidência] ver TryLoadCustomAdrenoDriver acima — o dlopen direto
+  // do .so do driver nunca funcionou (HAL exporta só `HMI` + deps não
+  // públicas; ICD exporta vk_icd*, não vkGetInstanceProcAddr).
+#if REX_PLATFORM_ANDROID
+  const char* custom_loader = std::getenv("REX_VULKAN_LOADER_PATH");
+  if (custom_loader != nullptr && custom_loader[0] != '\0') {
+    loader_loaded = TryLoadCustomAdrenoDriver(vulkan_instance->loader_, custom_loader);
+  }
+#else
+  // Desktop Linux: dlopen direto (ICDs de desktop exportam os símbolos do
+  // loader) — mantido para setups LD_*, agora com o motivo real no log.
   if (const char* custom_loader = std::getenv("REX_VULKAN_LOADER_PATH");
       custom_loader != nullptr && custom_loader[0] != '\0') {
     loader_loaded = vulkan_instance->loader_.Load(custom_loader);
     if (loader_loaded) {
-      REXLOG_INFO("Vulkan: driver customizado (AdrenoTools) carregado: {}",
-                  custom_loader);
+      REXLOG_INFO("Vulkan: driver customizado carregado: {}", custom_loader);
     } else {
-      REXLOG_ERROR(
-          "Vulkan: falha ao carregar driver customizado '{}'; usando o driver "
-          "do sistema",
-          custom_loader);
+      REXLOG_ERROR("Vulkan: falha ao carregar driver customizado '{}': {}; usando o "
+                   "driver do sistema",
+                   custom_loader, vulkan_instance->loader_.last_error());
     }
   }
+#endif
   if (!loader_loaded) {
     loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
     if (!loader_loaded) {
-      REXLOG_ERROR("Failed to load {}", platform::lib_names::kVulkanLoader);
+      REXLOG_ERROR("Failed to load {}: {}", platform::lib_names::kVulkanLoader,
+                   vulkan_instance->loader_.last_error());
       return nullptr;
     }
+#if REX_PLATFORM_ANDROID
+    if (custom_loader != nullptr && custom_loader[0] != '\0') {
+      REXLOG_WARN(
+          "Vulkan: rodando com o DRIVER DO SISTEMA (driver customizado não pôde "
+          "ser carregado)");
+      // Nota: o outcome "custom_failed" já foi gravado pelo
+      // TryLoadCustomAdrenoDriver — não sobrescrever com "system".
+    } else {
+      // Nenhum driver customizado solicitado: registra o estado normal.
+      WriteDriverBootOutcome("system", "-", "-");
+    }
+#endif
   }
 #endif
 

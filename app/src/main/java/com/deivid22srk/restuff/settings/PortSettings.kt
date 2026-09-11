@@ -68,6 +68,8 @@ data class PortSettings(
     val unlockAllCheat: Boolean = false,        // unlock_all (cheats overlay)
     val unlock60Fps: Boolean = true,            // RESTUFF_FPS60 (unlock de vblank)
     val vblankHz: Int = 120,                    // vblank_hz do restuff.toml
+    // Diagnóstico (log detalhado persistido)
+    val detailedLogs: Boolean = true,           // log_level=debug no toml + REX_LOG_LEVEL
     // Efeitos da tela inicial
     val particlesEnabled: Boolean = true,
     val reduceMotionOverride: Boolean = false,
@@ -99,6 +101,7 @@ class PortSettingsRepository(context: Context) {
             unlockAllCheat = prefs.getBoolean(K_UNLOCK_ALL, false),
             unlock60Fps = prefs.getBoolean(K_UNLOCK_60FPS, true),
             vblankHz = prefs.getInt(K_VBLANK, 120).coerceIn(30, 240),
+            detailedLogs = prefs.getBoolean(K_DETAILED_LOGS, true),
             particlesEnabled = prefs.getBoolean(K_PARTICLES, true),
             reduceMotionOverride = prefs.getBoolean(K_REDUCE_MOTION, false),
         )
@@ -122,6 +125,7 @@ class PortSettingsRepository(context: Context) {
             .putBoolean(K_UNLOCK_ALL, s.unlockAllCheat)
             .putBoolean(K_UNLOCK_60FPS, s.unlock60Fps)
             .putInt(K_VBLANK, s.vblankHz)
+            .putBoolean(K_DETAILED_LOGS, s.detailedLogs)
             .putBoolean(K_PARTICLES, s.particlesEnabled)
             .putBoolean(K_REDUCE_MOTION, s.reduceMotionOverride)
             .apply()
@@ -147,6 +151,7 @@ class PortSettingsRepository(context: Context) {
         const val K_UNLOCK_ALL = "restuff_unlock_all"
         const val K_UNLOCK_60FPS = "restuff_unlock_60fps"
         const val K_VBLANK = "restuff_vblank_hz"
+        const val K_DETAILED_LOGS = "restuff_detailed_logs"
         const val K_PARTICLES = "particles_enabled"     // mesma chave da v1.0
         const val K_REDUCE_MOTION = "reduce_motion"     // mesma chave da v1.0
     }

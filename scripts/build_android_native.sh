@@ -100,6 +100,49 @@ if [[ ! -x "$GLSLC_HOST" ]]; then
     chmod +x "$GLSLC_HOST"
 fi
 
+# --- [1d] AdrenoTools (libadrenotools + hooks p/ driver Turnip custom) ------
+# Motor do carregamento REAL do driver customizado: adrenotools_open_libvulkan
+# devolve o handle do loader do sistema com hooks que redirecionam a abertura
+# do driver para o .so importado (namespace ligado ao sphal, onde
+# libcutils/libhardware resolvem). Requer:
+#   - submódulo native/thirdparty/libadrenotools (com lib/linkernsbypass)
+#   - useLegacyPackaging=true no APK (hooks como ARQUIVOS em nativeLibraryDir)
+# API mínima 28 (linkernsbypass); em API < 28 o adrenotools devolve nullptr e
+# o port cai no driver do sistema (fallback logado).
+ADRENOTOOLS_SRC="${ADRENOTOOLS_SRC:-$ROOT/native/thirdparty/libadrenotools}"
+if [[ ! -d "$ADRENOTOOLS_SRC/lib/linkernsbypass" ]]; then
+    echo "ERRO: $ADRENOTOOLS_SRC sem lib/linkernsbypass (submódulos inicializados?)" >&2
+    exit 1
+fi
+ADRENOTOOLS_BUILD="$ROOT/build/adrenotools-$ABI"
+if [[ ! -f "$ADRENOTOOLS_BUILD/libadrenotools.so" ]]; then
+    echo "== adrenotools: build Android ($ABI) =="
+    # BUILD_SHARED_LIBS=ON: add_library(adrenotools) do upstream não declara
+    # tipo → sem isso vira .a (e o --exclude-libs do upstream exige shared).
+    # CMAKE_LIBRARY_OUTPUT_DIRECTORY: os 4 hooks vivem em src/hook/ sem isso —
+    # unifica tudo na raiz do build p/ o loop de cópia abaixo.
+    cmake -S "$ADRENOTOOLS_SRC" -B "$ADRENOTOOLS_BUILD" \
+        -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM="android-28" \
+        -DANDROID_STL=c++_shared \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$ADRENOTOOLS_BUILD" \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$ADRENOTOOLS_BUILD" --parallel "$(nproc)"
+fi
+# libadrenotools + hooks (precisam existir COMO ARQUIVOS — useLegacyPackaging)
+for adrlib in libadrenotools.so libmain_hook.so libhook_impl.so \
+              libfile_redirect_hook.so libgsl_alloc_hook.so; do
+    if [[ ! -f "$ADRENOTOOLS_BUILD/$adrlib" ]]; then
+        echo "ERRO FATAL: $adrlib não construído (build adrenotools)" >&2
+        exit 1
+    fi
+    cp "$ADRENOTOOLS_BUILD/$adrlib" "$JNILIBS_DIR/"
+done
+echo "  adrenotools: 5 libs copiadas para jniLibs"
+
 # --- [2] librestuff.so -----------------------------------------------------
 echo "== librestuff.so ($ABI) =="
 cmake -S "$ROOT/native" -B "$BUILD_OUT" \

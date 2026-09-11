@@ -132,6 +132,13 @@ target_compile_options(restuff PRIVATE
     -Wno-unused-variable
 )
 
+# Port Android: frame pointers preservados — o crash handler nativo
+# (android_main.cpp, _Unwind_Backtrace) depende deles para produzir backtraces
+# úteis em Release. Custo de registro (~1%), irrisório para um port.
+if(ANDROID)
+    target_compile_options(restuff PRIVATE -fno-omit-frame-pointer)
+endif()
+
 # rex::runtime traz rexcore/rexfilesystem/rexaudio/rexinput (e SDL3).
 # rex::ui é OBJECT library (window_sdl, imgui_drawer, overlay dialogs
 # e os objetos imgui) — os objetos entram direto no link do restuff.

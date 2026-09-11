@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Aplica os overlays do port sobre as árvores dos submódulos:
 #   - rexglue-sdk: surface_android (NOVOS arquivos), branch Android no
-#     window_sdl.cpp/ui CMake (substituição), deps android/log
-#   - NaughtyBear_ReStuff: gating __ANDROID__ em main.cpp/restuff_app.h
+#     window_sdl.cpp/ui CMake (substituição), deps android/log, dynlib
+#     (Adopt/dlerror p/ AdrenoTools), vulkan_device (defaults mobile),
+#     vulkan_instance (driver custom via libadrenotools)
+#   - NaughtyBear_ReStuff: gating __ANDROID__ em main.cpp/restuff_app.h,
+#     native_vk.cpp (fix do LoaderGdpa — vkCmd* via tabela da instance)
 #
 # Idempotente e determinístico: cada arquivo overlay substitui o original
 # na árvore do submódulo (SHAs fixados, zero drift). Arquivos marcados como
@@ -55,6 +58,8 @@ for rel in \
     src/core/logging.cpp \
     src/input/sdl/sdl_input_driver.cpp \
     src/ui/vulkan/vulkan_instance.cpp \
+    src/core/dynlib_posix.cpp \
+    include/rex/platform/dynlib.h \
     src/system/CMakeLists.txt \
     include/rex/ui/vulkan/device.h \
     include/rex/ui/vulkan/functions/device_1_0.inc \
@@ -80,7 +85,8 @@ for rel in \
     src/main.cpp \
     src/restuff_app.h \
     src/video_player.h \
-    src/hooks.cpp
+    src/hooks.cpp \
+    src/native_vk.cpp
 do
     replace "$OVERLAY/NaughtyBear_ReStuff/$rel" "$ROOT/restuff/$rel"
 done

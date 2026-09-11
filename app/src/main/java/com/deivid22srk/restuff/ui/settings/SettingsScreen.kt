@@ -440,6 +440,17 @@ fun SettingsScreen(
                 // ================= DRIVERS GRÁFICOS (TURNIP) =================
                 DriversSection(accent = accent)
 
+                Spacer(Modifier.height(14.dp))
+
+                // ==================== DIAGNÓSTICO ============================
+                DiagnosticsSection(
+                    accent = accent,
+                    detailedLogs = settings.detailedLogs,
+                    onDetailedLogsChange = { checked ->
+                        onSettingsChange { it.copy(detailedLogs = checked) }
+                    }
+                )
+
                 Spacer(Modifier.height(16.dp))
                 Text(
                     text = config.labelSettingsFooter,
@@ -520,8 +531,10 @@ private fun DriversSection(accent: Color) {
     SettingsSection(title = "Drivers gráficos (Turnip)", icon = Icons.Filled.Memory, accent = accent) {
         Text(
             text = "Driver Vulkan no padrão AdrenoTools (.zip com meta.json). " +
-                "O driver selecionado substitui o driver do sistema ao iniciar o jogo; " +
-                "se falhar, o app usa o driver do sistema automaticamente.",
+                "O driver selecionado é carregado via AdrenoTools (hooks de " +
+                "namespace linker) no próximo início do jogo. Em caso de falha " +
+                "o motor volta para o driver do sistema e o motivo fica no log " +
+                "e no Diagnóstico abaixo — nada fica silencioso.",
             color = Color.White.copy(alpha = 0.55f),
             fontSize = 11.5.sp,
             lineHeight = 15.sp
@@ -631,6 +644,112 @@ private fun DriversSection(accent: Color) {
                 lineHeight = 15.sp
             )
         }
+    }
+}
+
+// ======================================================================
+// Diagnóstico (log detalhado persistido + desfecho do último boot)
+// ======================================================================
+
+/**
+ * Seção de diagnóstico: toggle do log detalhado (debug), local do log da
+ * última sessão (storage público com fallback privado) e desfecho do
+ * carregamento do driver Vulkan no último boot (lido de
+ * files/drivers/last_boot.txt, escrito por vulkan_instance.cpp).
+ */
+@Composable
+private fun DiagnosticsSection(
+    accent: Color,
+    detailedLogs: Boolean,
+    onDetailedLogsChange: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+
+    SettingsSection(title = "Diagnóstico", icon = Icons.Filled.Tune, accent = accent) {
+        ToggleRow(
+            label = "Log detalhado (debug)",
+            subtitle = "log_level=debug no motor + backtrace de crash persistido",
+            checked = detailedLogs,
+            accent = accent
+        ) { checked ->
+            onDetailedLogsChange(checked)
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // Local do log da última sessão.
+        val logLocation = remember { GpuDriverManager.lastLogLocation(context) }
+        Text(
+            text = when {
+                logLocation == null ->
+                    "Log: ainda não iniciado."
+                logLocation == "privado" ->
+                    "Log: storage PRIVADO do app (conceda \"Todos os arquivos\" " +
+                        "para usar /storage/emulated/0/Naughty Bear ReStuff/logs)."
+                else -> "Log: " + logLocation.removePrefix("publico:")
+            },
+            color = Color.White.copy(alpha = 0.45f),
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp,
+            fontFamily = FontFamily.Monospace
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        // Desfecho do driver no último boot.
+        val outcome = remember { GpuDriverManager.lastBootOutcome(context) }
+        if (outcome != null) {
+            val label: String
+            val labelColor: Color
+            when (outcome.status) {
+                "custom_ok" -> {
+                    label = "Último boot: driver CUSTOMIZADO carregado (AdrenoTools)"
+                    labelColor = Color(0xFFA8D8A8)
+                }
+                "custom_failed" -> {
+                    label = "Último boot: driver customizado FALHOU — usado o do sistema"
+                    labelColor = Color(0xFFE0A0A0)
+                }
+                else -> {
+                    label = "Último boot: driver do sistema"
+                    labelColor = Color.White.copy(alpha = 0.45f)
+                }
+            }
+            Text(
+                text = label,
+                color = labelColor,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            if (outcome.status == "custom_failed" && outcome.error != "-") {
+                Text(
+                    text = "  motivo: " + outcome.error.take(120),
+                    color = Color.White.copy(alpha = 0.38f),
+                    fontSize = 10.sp,
+                    lineHeight = 13.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        } else {
+            Text(
+                text = "Driver: rode o jogo uma vez para ver o desfecho do boot.",
+                color = Color.White.copy(alpha = 0.45f),
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            text = "Crashes nativos gravam backtrace no log da sessão e em " +
+                "files/last_crash.txt (visível só via adb/backup).",
+            color = Color.White.copy(alpha = 0.38f),
+            fontSize = 10.sp,
+            lineHeight = 13.sp
+        )
     }
 }
 
