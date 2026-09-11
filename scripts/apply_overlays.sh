@@ -53,6 +53,7 @@ for rel in \
     src/core/threading_posix.cpp \
     src/core/filesystem_posix.cpp \
     src/core/logging.cpp \
+    src/input/sdl/sdl_input_driver.cpp \
     src/ui/vulkan/vulkan_instance.cpp \
     src/system/CMakeLists.txt \
     include/rex/ui/vulkan/device.h \

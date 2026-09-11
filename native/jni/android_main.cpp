@@ -48,9 +48,11 @@ namespace restuff_android {
 // Virtual gamepad P1 (SDL virtual joystick, tipo GAMEPAD)
 // ----------------------------------------------------------------------
 
-// Bitmask recebido do overlay Kotlin — MESMA ordem do enum
-// SDL_GAMEPAD_BUTTON_*: A, B, X, Y, Back, Guide, Start, LS, RS,
-// DUp, DDown, DLeft, DRight (bits 0..14). Bits 15/16 = LT/RT analógicos.
+// Bitmask recebido do overlay Kotlin — ORDEM CANÔNICA do enum
+// SDL_GAMEPAD_BUTTON_* (o SDL mapeia o botão virtual i para o botão
+// padrão i): A, B, X, Y, Back, Guide, Start, LS(7), RS(8), LB(9), RB(10),
+// DUp(11), DDown(12), DLeft(13), DRight(14) — bits 0..14.
+// Bits 15/16 = LT/RT analógicos (vão pelos eixos 4/5, não pelo bitmask).
 constexpr int kBitLt = 15;
 constexpr int kBitRt = 16;
 

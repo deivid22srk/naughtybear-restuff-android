@@ -61,11 +61,16 @@ class VirtualGamepadView(
     )
 
     private companion object {
-        // Bits compatíveis com android_main.cpp / SDL gamepad button order.
+        // Bits compatíveis com android_main.cpp — ORDEM CANÔNICA do enum
+        // SDL_GAMEPAD_BUTTON_* (o joystick virtual mapeia botão i → botão
+        // padrão i): A, B, X, Y, Back, Guide, Start, LS, RS, LB, RB,
+        // DUp, DDown, DLeft, DRight. LT/RT vão pelos eixos analógicos.
+        // ⚠️ LB/RB (9/10) vêm DEPOIS dos stick-clicks (7/8) — inverter aqui
+        // troca ombros por clique-de-stick dentro do jogo.
         const val BIT_A = 0; const val BIT_B = 1; const val BIT_X = 2; const val BIT_Y = 3
         const val BIT_BACK = 4; const val BIT_GUIDE = 5; const val BIT_START = 6
-        const val BIT_LB = 7; const val BIT_RB = 8
-        const val BIT_LS = 9; const val BIT_RS = 10
+        const val BIT_LS = 7; const val BIT_RS = 8
+        const val BIT_LB = 9; const val BIT_RB = 10
         const val BIT_DUP = 11; const val BIT_DDOWN = 12
         const val BIT_DLEFT = 13; const val BIT_DRIGHT = 14
         const val BIT_LT = 15; const val BIT_RT = 16
