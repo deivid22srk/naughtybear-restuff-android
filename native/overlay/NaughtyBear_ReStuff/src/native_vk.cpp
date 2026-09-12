@@ -1704,16 +1704,15 @@ static std::string RestuffEnvSummary() {
 
 // ---- [FRAMEMS] (perf/sd695-30fps): always-on present-cycle accounting ----
 // Field-diagnosis frame split, zero configuration: every present-thread cycle
-// is decomposed into wait (idle: pacing sleep + WaitForRawFrame + SDK
-// prologue), fence (pipelined top-of-frame / serialized trailing fence wait),
-// prep (ConsumeRawFrame + PrepareTranslatedDraws), rec (record + submit),
-// wb (resolve writebacks), sdk (presenter work outside our callback), gpuq
-// (submit -> fence-signal latency of this slot's previous frame = GPU frame
-// + queue wait; pipelined-compatible, unlike GPUPASS) and cyc
-// (present-to-present period). ~6 steady_clock reads per frame; logged every
-// 30 presents next to [present alive]. RESTUFF_NO_FRAMEMS=1 disables.
+// is decomposed into wait (idle BETWEEN presents: pacing sleep + iterações
+// WaitForRawFrame + SDK prologue), fence (pipelined top-of-frame / serialized
+// trailing fence wait), prep (ConsumeRawFrame + PrepareTranslatedDraws), rec
+// (record + submit), wb (resolve writebacks), sdk (presenter work outside our
+// callback), gpuq (submit -> fence-signal latency of this slot's previous
+// frame = GPU frame + queue wait; pipelined-compatible, unlike GPUPASS) and
+// cyc (present-to-present period). ~9 steady_clock reads per frame; logged
+// every 30 presents next to [present alive]. RESTUFF_NO_FRAMEMS=1 disables.
 // Written only by the present thread (g_pms_* precedent).
-std::chrono::steady_clock::time_point g_fm_loop_mark{};  // set by the present loop
 uint64_t g_fm_n = 0, g_fm_cyc_us = 0, g_fm_wait_us = 0, g_fm_fence_us = 0;
 uint64_t g_fm_prep_us = 0, g_fm_rec_us = 0, g_fm_wb_us = 0, g_fm_sdk_us = 0;
 uint64_t g_fm_gpuq_us = 0, g_fm_draws = 0;
@@ -1721,6 +1720,9 @@ std::chrono::steady_clock::time_point g_fm_sub_t[4]{};  // per-frame-slot submit
 std::chrono::steady_clock::time_point g_fm_cb_end{};  // callback close (this scope:
 // the M3.135 g_pms_cb_end lives in an anonymous namespace opened BELOW this
 // point, so the present loop cannot reference it without an ambiguity)
+std::chrono::steady_clock::time_point g_fm_back_t{};  // end of an iteration's
+// WORK (after PresentClearFrame returns, BEFORE the pacing sleep) -- the next
+// callback's wait = cb_start - back_t spans sleep + idle-else iterations
 
 void NativeVulkanGraphicsSystem::PresentThreadMain() {
   REXLOG_INFO("[native_vk] present thread started");
@@ -1802,8 +1804,12 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
       static const bool s_legacy_sleep =
           getenv("RESTUFF_PACE_PRESENT") == nullptr && !s_pace60;
       const auto frame_start = std::chrono::steady_clock::now();
-      // [FRAMEMS]: cyc = present-to-present period; the idle half (pacing
-      // sleep + frame wait) is closed at the next callback's entry.
+      // [FRAMEMS]: cyc = present-to-present period. g_fm_back_t (set at the
+      // END of the previous iteration's work, before its pacing sleep) is the
+      // anchor the next callback's `wait` closes against -- so the sleep and
+      // any WaitForRawFrame-only iterations in between count as idle, not as
+      // work. g_fm_cb_end is epoch-cleared each iteration so the SDK-epilogue
+      // stretch below only accumulates when THIS iteration ran the callback.
       static auto s_fm_prev_start = std::chrono::steady_clock::time_point{};
       if (s_fm_prev_start.time_since_epoch().count()) {
         g_fm_cyc_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1811,14 +1817,17 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
                                      .count());
       }
       s_fm_prev_start = frame_start;
-      g_fm_loop_mark = frame_start;
+      g_fm_cb_end = std::chrono::steady_clock::time_point{};
       PresentClearFrame();
       // [FRAMEMS]: SDK epilogue = our callback's return -> back here (the
-      // presenter's ImGui pass / guest-output blit / publish, per M3.135).
-      if (g_fm_cb_end.time_since_epoch().count() && g_fm_loop_mark < g_fm_cb_end) {
+      // presenter's ImGui pass / guest-output blit / publish, per M3.135), and
+      // back_t marks where WORK ends -- everything after it until the next
+      // callback entry is `wait`.
+      if (g_fm_cb_end.time_since_epoch().count()) {
         g_fm_sdk_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - g_fm_cb_end)
                                       .count());
+        g_fm_back_t = std::chrono::steady_clock::now();
       }
       last_present = frame_start;
       // M3.313 (RESTUFF_DUMPGO=<dir>): smudge ground truth. Every ~2s, dump the
@@ -6147,13 +6156,22 @@ void FlushResolveWritebacks() {
     return;
   }
   const uint8_t* base = static_cast<const uint8_t*>(tl.wb_ptr);
-  // M4.2d (perf/sd695-30fps): row-chunked parallel writeback. The tiled
-  // destination is a bijection (x,y) -> byte offset, so disjoint row ranges
-  // write disjoint bytes and need no synchronization. 3 workers + this
-  // thread, engaged only when there is real pixel work (a thread spawn costs
-  // ~20-60us on the big cores; below the threshold the serial loop is
-  // cheaper). Byte-exact with the previous single-threaded loop: same source
-  // walk, same per-pixel conversion, same TiledBlockByteOffset call.
+  // M4.2d (perf/sd695-30fps): row-chunked parallel writeback. NOTE: this path
+  // only has work when the resolve-writeback capture is enabled
+  // (RESTUFF_RESOLVE_WB=1) -- the field default is OFF, so this accelerates a
+  // diagnostic configuration, not the default frame path.
+  //
+  // Scheduling: writebacks are GROUPED BY copy_dest and each group runs all
+  // its row-chunks SERIALLY on one lane, in the original order. Two resolves
+  // to the SAME dest in one frame (re-resolves) therefore keep the serial
+  // loop's deterministic last-writer-wins semantics -- a per-wb-only split
+  // would race them across lanes. Distinct dests go to different lanes: the
+  // tiled destination is a bijection (x,y) -> byte offset within a wb
+  // (verified computationally, incl. odd widths), and guest texture
+  // allocations at distinct bases are disjoint regions. Chunks are split at
+  // >= 16384 px so the bijection's disjoint-row argument holds trivially;
+  // the whole parallel path engages at >= 65536 px, where 3 thread spawns
+  // (~20-60us) are amortized. Below that, the serial loop runs unchanged.
   const auto run_rows = [&base, &tl](size_t wb_i, uint32_t y0, uint32_t y1) {
     const auto& wb = tl.wb_pending[wb_i];
     uint8_t* dst = renderer::GuestPhysPtrMut(wb.dest);
@@ -6179,17 +6197,31 @@ void FlushResolveWritebacks() {
         size_t wb_i;
         uint32_t y0, y1;
       };
+      // Per-dest groups: {dest -> ordered chunk list}, preserving wb order.
       std::vector<Chunk> chunks;
+      std::unordered_map<uint32_t, std::vector<uint32_t>> dest_chunk_ix;
       for (size_t i = 0; i < tl.wb_pending.size(); ++i) {
         const uint32_t h = tl.wb_pending[i].h, w = tl.wb_pending[i].w;
         const uint32_t n = (uint64_t(w) * h >= 16384 && h >= 8) ? 4u : 1u;
-        for (uint32_t c = 0; c < n; ++c) chunks.push_back({i, h * c / n, h * (c + 1) / n});
+        std::vector<uint32_t>& mine = dest_chunk_ix[tl.wb_pending[i].dest];
+        for (uint32_t c = 0; c < n; ++c) {
+          mine.push_back(uint32_t(chunks.size()));
+          chunks.push_back({i, h * c / n, h * (c + 1) / n});
+        }
       }
+      // Spread the per-dest groups across up to 4 lanes (round-robin on the
+      // group map's iteration order is fine -- groups are independent).
       const unsigned lanes =
-          std::min<unsigned>(4, std::max<unsigned>(1, unsigned(chunks.size())));
-      const auto lane = [&chunks, &run_rows, lanes](unsigned L) {
-        for (size_t k = L; k < chunks.size(); k += lanes) {
-          run_rows(chunks[k].wb_i, chunks[k].y0, chunks[k].y1);
+          std::min<unsigned>(4, std::max<unsigned>(1, unsigned(dest_chunk_ix.size())));
+      const auto lane = [&](unsigned L) {
+        unsigned g = 0;
+        for (const auto& [dest, idxs] : dest_chunk_ix) {
+          (void)dest;
+          if ((g++ % lanes) == L) {  // one group per lane: serial within dest
+            for (uint32_t ci : idxs) {
+              run_rows(chunks[ci].wb_i, chunks[ci].y0, chunks[ci].y1);
+            }
+          }
         }
       };
       std::vector<std::thread> workers;
@@ -10595,12 +10627,13 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         // mostly OUR OWN draw preparation below, not the SDK's. Timestamp the
         // callback entry to tell the two apart instead of assuming.
         g_pms_cb_start = std::chrono::steady_clock::now();
-        // [FRAMEMS]: idle half-cycle (pacing sleep + WaitForRawFrame + SDK
+        // [FRAMEMS]: idle half-cycle since the previous iteration's work
+        // ended (pacing sleep + WaitForRawFrame-only iterations + SDK
         // prologue) + present counter. Counted here so every phase pair
         // belongs to exactly one cycle even if the callback bails early.
-        if (g_fm_loop_mark.time_since_epoch().count() && g_fm_loop_mark <= g_pms_cb_start) {
+        if (g_fm_back_t.time_since_epoch().count() && g_fm_back_t <= g_pms_cb_start) {
           g_fm_wait_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
-                                         g_pms_cb_start - g_fm_loop_mark)
+                                         g_pms_cb_start - g_fm_back_t)
                                          .count());
         }
         ++g_fm_n;
@@ -11165,9 +11198,10 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           TexCensus();  // M4.36 (RESTUFF_TEXCENSUS=1), no-op otherwise
         }
         // [FRAMEMS]: 30-present summary, always on (kill: RESTUFF_NO_FRAMEMS=1).
-        // fps from cyc; wait+fence+prep+rec+wb+sdk ≈ cyc (residual = SDK
-        // prologue inside the callback + pacing margins). gpuq is the GPU
-        // frame + queue wait of the PREVIOUS submit on the same slot.
+        // fps from cyc; wait = idle between presents (pacing sleep + frame
+        // waits + SDK prologue); fence+prep+rec+wb+sdk+wait ≈ cyc (residual =
+        // pacing sleep overshoot + loop overhead). gpuq is the GPU frame +
+        // queue wait of the PREVIOUS submit on the same slot.
         {
           static const bool s_no_fm = getenv("RESTUFF_NO_FRAMEMS") != nullptr;
           if (!s_no_fm && g_fm_n >= 30) {
