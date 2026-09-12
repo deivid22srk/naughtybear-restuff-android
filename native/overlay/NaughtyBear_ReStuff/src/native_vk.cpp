@@ -1702,6 +1702,26 @@ static std::string RestuffEnvSummary() {
   return s.empty() ? std::string("(none)") : s;
 }
 
+// ---- [FRAMEMS] (perf/sd695-30fps): always-on present-cycle accounting ----
+// Field-diagnosis frame split, zero configuration: every present-thread cycle
+// is decomposed into wait (idle: pacing sleep + WaitForRawFrame + SDK
+// prologue), fence (pipelined top-of-frame / serialized trailing fence wait),
+// prep (ConsumeRawFrame + PrepareTranslatedDraws), rec (record + submit),
+// wb (resolve writebacks), sdk (presenter work outside our callback), gpuq
+// (submit -> fence-signal latency of this slot's previous frame = GPU frame
+// + queue wait; pipelined-compatible, unlike GPUPASS) and cyc
+// (present-to-present period). ~6 steady_clock reads per frame; logged every
+// 30 presents next to [present alive]. RESTUFF_NO_FRAMEMS=1 disables.
+// Written only by the present thread (g_pms_* precedent).
+std::chrono::steady_clock::time_point g_fm_loop_mark{};  // set by the present loop
+uint64_t g_fm_n = 0, g_fm_cyc_us = 0, g_fm_wait_us = 0, g_fm_fence_us = 0;
+uint64_t g_fm_prep_us = 0, g_fm_rec_us = 0, g_fm_wb_us = 0, g_fm_sdk_us = 0;
+uint64_t g_fm_gpuq_us = 0, g_fm_draws = 0;
+std::chrono::steady_clock::time_point g_fm_sub_t[4]{};  // per-frame-slot submit time
+std::chrono::steady_clock::time_point g_fm_cb_end{};  // callback close (this scope:
+// the M3.135 g_pms_cb_end lives in an anonymous namespace opened BELOW this
+// point, so the present loop cannot reference it without an ambiguity)
+
 void NativeVulkanGraphicsSystem::PresentThreadMain() {
   REXLOG_INFO("[native_vk] present thread started");
   REXLOG_INFO("[ENV] {}", RestuffEnvSummary());
@@ -1782,7 +1802,24 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
       static const bool s_legacy_sleep =
           getenv("RESTUFF_PACE_PRESENT") == nullptr && !s_pace60;
       const auto frame_start = std::chrono::steady_clock::now();
+      // [FRAMEMS]: cyc = present-to-present period; the idle half (pacing
+      // sleep + frame wait) is closed at the next callback's entry.
+      static auto s_fm_prev_start = std::chrono::steady_clock::time_point{};
+      if (s_fm_prev_start.time_since_epoch().count()) {
+        g_fm_cyc_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     frame_start - s_fm_prev_start)
+                                     .count());
+      }
+      s_fm_prev_start = frame_start;
+      g_fm_loop_mark = frame_start;
       PresentClearFrame();
+      // [FRAMEMS]: SDK epilogue = our callback's return -> back here (the
+      // presenter's ImGui pass / guest-output blit / publish, per M3.135).
+      if (g_fm_cb_end.time_since_epoch().count() && g_fm_loop_mark < g_fm_cb_end) {
+        g_fm_sdk_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now() - g_fm_cb_end)
+                                      .count());
+      }
       last_present = frame_start;
       // M3.313 (RESTUFF_DUMPGO=<dir>): smudge ground truth. Every ~2s, dump the
       // presenter's guest-output image (post gamma quad, pre paint/WSI) to a
@@ -6110,11 +6147,19 @@ void FlushResolveWritebacks() {
     return;
   }
   const uint8_t* base = static_cast<const uint8_t*>(tl.wb_ptr);
-  for (const auto& wb : tl.wb_pending) {
+  // M4.2d (perf/sd695-30fps): row-chunked parallel writeback. The tiled
+  // destination is a bijection (x,y) -> byte offset, so disjoint row ranges
+  // write disjoint bytes and need no synchronization. 3 workers + this
+  // thread, engaged only when there is real pixel work (a thread spawn costs
+  // ~20-60us on the big cores; below the threshold the serial loop is
+  // cheaper). Byte-exact with the previous single-threaded loop: same source
+  // walk, same per-pixel conversion, same TiledBlockByteOffset call.
+  const auto run_rows = [&base, &tl](size_t wb_i, uint32_t y0, uint32_t y1) {
+    const auto& wb = tl.wb_pending[wb_i];
     uint8_t* dst = renderer::GuestPhysPtrMut(wb.dest);
-    if (!dst) continue;
+    if (!dst) return;
     const uint32_t* src = reinterpret_cast<const uint32_t*>(base + wb.off);
-    for (uint32_t y = 0; y < wb.h; ++y) {
+    for (uint32_t y = y0; y < y1; ++y) {
       for (uint32_t x = 0; x < wb.w; ++x) {
         const uint32_t v = src[y * wb.w + x];
         const uint32_t r8 = (v & 0x3FF) >> 2;
@@ -6123,6 +6168,37 @@ void FlushResolveWritebacks() {
         const uint32_t a8 = ((v >> 30) & 0x3) * 85;
         const uint32_t argb = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
         std::memcpy(dst + renderer::TiledBlockByteOffset(x, y, wb.w, 4), &argb, 4);
+      }
+    }
+  };
+  {
+    uint64_t total_px = 0;
+    for (const auto& wb : tl.wb_pending) total_px += uint64_t(wb.w) * wb.h;
+    if (total_px >= 65536) {
+      struct Chunk {
+        size_t wb_i;
+        uint32_t y0, y1;
+      };
+      std::vector<Chunk> chunks;
+      for (size_t i = 0; i < tl.wb_pending.size(); ++i) {
+        const uint32_t h = tl.wb_pending[i].h, w = tl.wb_pending[i].w;
+        const uint32_t n = (uint64_t(w) * h >= 16384 && h >= 8) ? 4u : 1u;
+        for (uint32_t c = 0; c < n; ++c) chunks.push_back({i, h * c / n, h * (c + 1) / n});
+      }
+      const unsigned lanes =
+          std::min<unsigned>(4, std::max<unsigned>(1, unsigned(chunks.size())));
+      const auto lane = [&chunks, &run_rows, lanes](unsigned L) {
+        for (size_t k = L; k < chunks.size(); k += lanes) {
+          run_rows(chunks[k].wb_i, chunks[k].y0, chunks[k].y1);
+        }
+      };
+      std::vector<std::thread> workers;
+      for (unsigned L = 1; L < lanes; ++L) workers.emplace_back(lane, L);
+      lane(0);
+      for (auto& t : workers) t.join();
+    } else {
+      for (size_t i = 0; i < tl.wb_pending.size(); ++i) {
+        run_rows(i, 0, tl.wb_pending[i].h);
       }
     }
   }
@@ -7900,6 +7976,33 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
   const void* ubo_prev_vs = nullptr;
   const void* ubo_prev_ps = nullptr;
   uint32_t ubo_prev_vs_off = 0, ubo_prev_ps_off = 0;
+  // M4.2b (perf/sd695-30fps): full-frame UBO content dedup. The legacy check
+  // only compared against the IMMEDIATELY PREVIOUS draw, so interleaved
+  // passes that revisit a bank (A,B,A,B) re-copied 2x kConstBlockBytes into
+  // the ring each time. ident() block pointers are exact content identity
+  // (M4.2 snapshot sharing: same pointer => same write generation =>
+  // byte-identical floats AND bool/loop banks), and every block referenced by
+  // tl.frame stays alive for the whole prepare pass, so a per-frame
+  // pair->offset map makes every revisit a zero-copy offset reuse -- the same
+  // soundness contract as the adjacent-draw fast path, extended to
+  // non-adjacent repeats. Offsets are write-once per frame (cursor only
+  // advances), so a map hit also skips the memcpy below. The map is static
+  // (bucket reuse) and cleared each prepare; cross-frame pointer reuse can
+  // therefore never alias. RESTUFF_NO_UBO_MAP=1 restores adjacent-only.
+  static const bool s_no_ubo_map =
+      getenv("RESTUFF_NO_UBO_MAP") != nullptr || s_no_ubo_dedup;
+  struct UboPairOff {
+    uint32_t vs_off = 0, ps_off = 0;
+  };
+  struct UboPairHash {
+    size_t operator()(const std::pair<const void*, const void*>& p) const {
+      return std::hash<const void*>{}(p.first) * 0x9E3779B97F4A7C15ull ^
+             std::hash<const void*>{}(p.second);
+    }
+  };
+  static std::unordered_map<std::pair<const void*, const void*>, UboPairOff, UboPairHash>
+      ubo_map;
+  ubo_map.clear();
   // M4.2: index payloads are shared_ptr-shared across draws (M3.45) but were
   // re-copied into the ib ring for every draw regardless. First sighting per
   // frame uploads and caches its offset; repeats reuse it (the vertex path's
@@ -8887,17 +8990,38 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
     r.index_count = uint32_t(d.idx().size());
     // M4.2: UBO dedup (state declared above). ident() equality is exact
     // content equality by construction; null idents (const-less draws) never
-    // dedup against each other.
+    // dedup against each other. M4.2b: with the pair map enabled (default),
+    // EVERY repeat this frame -- adjacent or not -- reuses its offsets and
+    // skips the 2x kConstBlockBytes ring copy; the adjacent trackers only
+    // serve the RESTUFF_NO_UBO_MAP=1 A/B path.
     const bool ubo_dup = !s_no_ubo_dedup && d.vs_consts.ident() &&
                          d.vs_consts.ident() == ubo_prev_vs &&
                          d.ps_consts.ident() == ubo_prev_ps;
-    if (ubo_dup) {
+    bool ubo_fresh = true;  // M4.2b: memcpy gate -- only a NEW ring region
+                            // writes bytes; every reuse skips the copy below.
+    if (!s_no_ubo_map && d.vs_consts.ident()) {
+      auto [it, fresh] =
+          ubo_map.try_emplace(std::make_pair(d.vs_consts.ident(), d.ps_consts.ident()),
+                              UboPairOff{});
+      if (fresh) {
+        it->second.vs_off = uint32_t(ubo_cursor);
+        it->second.ps_off = it->second.vs_off + kConstBlockBytes;
+        ubo_cursor += 2 * kConstBlockBytes;
+      } else {
+        ubo_fresh = false;
+      }
+      r.vs_ubo_off = it->second.vs_off;
+      r.ps_ubo_off = it->second.ps_off;
+    } else if (ubo_dup) {
       r.vs_ubo_off = ubo_prev_vs_off;
       r.ps_ubo_off = ubo_prev_ps_off;
+      ubo_fresh = false;
     } else {
       r.vs_ubo_off = uint32_t(ubo_cursor);
       r.ps_ubo_off = r.vs_ubo_off + kConstBlockBytes;
       ubo_cursor += 2 * kConstBlockBytes;
+    }
+    if (!ubo_dup) {
       ubo_prev_vs = d.vs_consts.ident();
       ubo_prev_ps = d.ps_consts.ident();
       ubo_prev_vs_off = r.vs_ubo_off;
@@ -9178,7 +9302,7 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
 
     const auto _ubo_t0 = s_pp ? _pl_now() : _pp_a;
     if (!ib_dup) std::memcpy(fs.ib.mapped + ib_off, d.idx().data(), d.idx().size() * 4);
-    if (!ubo_dup) {  // M4.2: dup draws reuse the previous blocks verbatim
+    if (ubo_fresh) {  // M4.2b: map hits AND adjacent dups reuse blocks verbatim
       std::memcpy(fs.ubo.mapped + r.vs_ubo_off, d.vs_consts.data(),
                   std::min<size_t>(d.vs_consts.size() * 4, 4096));
       std::memcpy(fs.ubo.mapped + r.ps_ubo_off, d.ps_consts.data(),
@@ -10471,6 +10595,15 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         // mostly OUR OWN draw preparation below, not the SDK's. Timestamp the
         // callback entry to tell the two apart instead of assuming.
         g_pms_cb_start = std::chrono::steady_clock::now();
+        // [FRAMEMS]: idle half-cycle (pacing sleep + WaitForRawFrame + SDK
+        // prologue) + present counter. Counted here so every phase pair
+        // belongs to exactly one cycle even if the callback bails early.
+        if (g_fm_loop_mark.time_since_epoch().count() && g_fm_loop_mark <= g_pms_cb_start) {
+          g_fm_wait_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                         g_pms_cb_start - g_fm_loop_mark)
+                                         .count());
+        }
+        ++g_fm_n;
 
         // M4.5: frame-slot selection. Serialized mode (default) pins slot 0
         // and waits right after submit exactly as always. Pipelined mode
@@ -10485,7 +10618,19 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         VkCommandBuffer cmd_buf_ = cmd_bufs_[frame_slot_];
         VkFence fence_ = fences_[frame_slot_];
         if (pipelined && slot_submitted_[frame_slot_]) {
+          const auto fm_fw0 = std::chrono::steady_clock::now();
           df.vkWaitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
+          const auto fm_fw1 = std::chrono::steady_clock::now();
+          g_fm_fence_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                           fm_fw1 - fm_fw0)
+                                           .count());
+          // [FRAMEMS] gpuq: submit -> signal latency of this slot's previous
+          // frame (GPU execution + queue wait).
+          if (frame_slot_ < 4 && g_fm_sub_t[frame_slot_].time_since_epoch().count()) {
+            g_fm_gpuq_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                            fm_fw1 - g_fm_sub_t[frame_slot_])
+                                            .count());
+          }
           slot_submitted_[frame_slot_] = false;
           RetireFrameSlot(dev, TL().slots[frame_slot_]);
         }
@@ -10495,6 +10640,8 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         // else the heuristic path = CPU-transformed Draw2DVertex.
         const bool translated = REXCVAR_GET(use_translated_shaders);
         std::vector<TransDrawRec> trans;
+        // [FRAMEMS]: prep end anchor (record+submit accumulates from here).
+        auto fm_prep_end = g_pms_cb_start;
         struct DrawRange {
           uint32_t first = 0, count = 0;
           VkDescriptorSet set = VK_NULL_HANDLE;
@@ -10509,7 +10656,12 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
             // scene render pass, both guest-independent) -- start replaying
             // the recorded pipeline population while the guest still boots.
             MaybeStartPipelinePrewarm(dev);
+            const auto fm_prep0 = std::chrono::steady_clock::now();
             trans = PrepareTranslatedDraws(dev);
+            fm_prep_end = std::chrono::steady_clock::now();
+            g_fm_prep_us += uint64_t(
+                std::chrono::duration_cast<std::chrono::microseconds>(fm_prep_end - fm_prep0)
+                    .count());
           }
           // Present quad (fullscreen, D3D NDC, y-up): samples the resolved
           // front buffer inside the swapchain pass. kPremul blend makes it an
@@ -10797,6 +10949,12 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           df.vkQueueSubmit(acq.queue(), 1, &si, fence_);
         }
         const auto _p_wait0 = std::chrono::steady_clock::now();
+        // [FRAMEMS]: record+submit = prep end -> here; remember this slot's
+        // submit instant for gpuq at its next fence wait.
+        g_fm_rec_us += uint64_t(
+            std::chrono::duration_cast<std::chrono::microseconds>(_p_wait0 - fm_prep_end)
+                .count());
+        if (frame_slot_ < 4) g_fm_sub_t[frame_slot_] = _p_wait0;
         // Contract: all work must complete before the refresher returns.
         // M4.5 (pipelined): the wait moved to the TOP of the next callback --
         // the guest-output image is published GPU-incomplete, and correctness
@@ -10804,14 +10962,34 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         // plus the frame-head barrier. gpu_fence_wait in [PRESENTMS2] reads ~0
         // in this mode; the residual wait shows up at the next frame's top.
         if (!pipelined) {
+          const auto fm_sw0 = std::chrono::steady_clock::now();
           df.vkWaitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
+          const auto fm_sw1 = std::chrono::steady_clock::now();
+          g_fm_fence_us += uint64_t(
+              std::chrono::duration_cast<std::chrono::microseconds>(fm_sw1 - fm_sw0)
+                  .count());
+          // [FRAMEMS] gpuq (serialized): sub->wait is ~0, so this equals the
+          // fence wait itself; kept for symmetry with the pipelined read.
+          if (frame_slot_ < 4 && g_fm_sub_t[frame_slot_].time_since_epoch().count()) {
+            g_fm_gpuq_us += uint64_t(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    fm_sw1 - g_fm_sub_t[frame_slot_])
+                    .count());
+          }
         }
         const auto _p_wb0 = std::chrono::steady_clock::now();
 
         // GPU done: scene_img copy (if dumped) is now readable -> write PPM.
         if (scene_dumped) WriteSceneDumpPpm();
         // M3.89: resolves are executed -> write their pixels into guest RAM.
-        FlushResolveWritebacks();
+        {
+          const auto fm_wb0 = std::chrono::steady_clock::now();
+          FlushResolveWritebacks();
+          g_fm_wb_us += uint64_t(
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now() - fm_wb0)
+                  .count());
+        }
         // M4.33: read the frame's pass timestamps (fence already waited --
         // GPUPASS blocks pipelined mode, so the frame is provably complete).
         GpCollect(dev);
@@ -10986,6 +11164,28 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
               TL().rt_tex.count(fb) ? 1 : 0);
           TexCensus();  // M4.36 (RESTUFF_TEXCENSUS=1), no-op otherwise
         }
+        // [FRAMEMS]: 30-present summary, always on (kill: RESTUFF_NO_FRAMEMS=1).
+        // fps from cyc; wait+fence+prep+rec+wb+sdk ≈ cyc (residual = SDK
+        // prologue inside the callback + pacing margins). gpuq is the GPU
+        // frame + queue wait of the PREVIOUS submit on the same slot.
+        {
+          static const bool s_no_fm = getenv("RESTUFF_NO_FRAMEMS") != nullptr;
+          if (!s_no_fm && g_fm_n >= 30) {
+            const double n = double(g_fm_n);
+            REXLOG_INFO(
+                "[FRAMEMS] fps={:.1f} cyc={:.1f}ms wait={:.1f} fence={:.1f} prep={:.1f} "
+                "rec={:.1f} wb={:.1f} sdk={:.1f} gpuq={:.1f} | draws/present={:.0f}",
+                1000.0 / (g_fm_cyc_us / n), g_fm_cyc_us / n / 1000.0,
+                g_fm_wait_us / n / 1000.0, g_fm_fence_us / n / 1000.0,
+                g_fm_prep_us / n / 1000.0, g_fm_rec_us / n / 1000.0,
+                g_fm_wb_us / n / 1000.0, g_fm_sdk_us / n / 1000.0,
+                g_fm_gpuq_us / n / 1000.0, g_fm_draws / n);
+            g_fm_cyc_us = g_fm_wait_us = g_fm_fence_us = 0;
+            g_fm_prep_us = g_fm_rec_us = g_fm_wb_us = g_fm_sdk_us = 0;
+            g_fm_gpuq_us = g_fm_draws = 0;
+            g_fm_n = 0;
+          }
+        }
         // #37 (RESTUFF_PACE=1): pacing histogram. The complaint is hitches vs
         // emulation's constant 60 -- averages hide exactly that, so report
         // windowed percentiles of the PRESENTED frame interval plus hitch
@@ -11026,7 +11226,11 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           }
         }
         ctx.SetIs8bpc(true);
+        // [FRAMEMS]: draws counted at callback close (records actually built);
+        // g_fm_cb_end mirrors g_pms_cb_end into the scope the present loop sees.
+        g_fm_draws += uint64_t(trans.size());
         g_pms_cb_end = std::chrono::steady_clock::now();  // M3.135
+        g_fm_cb_end = g_pms_cb_end;
         return true;
       });
 

@@ -92,6 +92,7 @@ for rel in \
     src/hooks.cpp \
     src/native_vk.cpp \
     src/renderer/guest_d3d_hooks.cpp \
+    src/renderer/native_backend_vk.cpp \
     src/renderer/up_draws.h \
     src/renderer/texture_mods.cpp \
     src/renderer/texture_mods.h
