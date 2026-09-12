@@ -150,13 +150,17 @@ private fun StatusLine(
         }
         if (detail != null) {
             Spacer(Modifier.height(6.dp))
+            // Nomes de arquivo (mono): 1 linha com ellipsis (nomes longos não
+            // podem empurrar o layout). Hints instrucionais (não-mono): texto
+            // completo em quantas linhas precisar — a frase do empty state é
+            // a instrução mais importante do primeiro uso.
             Text(
                 text = detail,
                 color = PortPalette.textSecondary,
                 style = if (detailMono) PortType.mono else PortType.rowSub,
                 textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                maxLines = if (detailMono) 1 else Int.MAX_VALUE,
+                overflow = if (detailMono) TextOverflow.Ellipsis else TextOverflow.Clip
             )
         }
     }

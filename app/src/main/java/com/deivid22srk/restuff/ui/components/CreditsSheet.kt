@@ -36,9 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -62,7 +60,6 @@ fun CreditsButton(
     modifier: Modifier = Modifier,
 ) {
     val config = PortBranding.config
-    val haptics = LocalHapticFeedback.current
     val entrance = rememberEntrance(460, reduceMotion)
 
     Box(
@@ -168,7 +165,7 @@ fun CreditsDialog(onDismiss: () -> Unit) {
                     modifier = Modifier
                         .align(Alignment.End)
                         .portClickable(haptic = true) { onDismiss() }
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
                 )
             }
         }

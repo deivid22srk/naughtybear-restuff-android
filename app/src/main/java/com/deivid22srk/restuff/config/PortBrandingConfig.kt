@@ -296,7 +296,7 @@ object PortBranding {
 
         // ---- Tela de configurações ----------------------------------------
         labelSettingsTitle = "Configurações",
-        labelSettingsSubtitle = "Motor ReStuff (rexglue) · ajustes do port",
+        labelSettingsSubtitle = "Ajustes do port para o seu aparelho",
         labelSettingsFooter = "Motor, driver e controles são aplicados na próxima inicialização do jogo; efeitos da tela inicial valem na hora.",
         labelClearSelection = "Limpar seleção salva",
 

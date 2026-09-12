@@ -62,9 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -163,7 +161,7 @@ fun SettingsScreen(
                     style = PortType.titleScreen
                 )
                 Text(
-                    text = "Ajustes do port para o seu aparelho",
+                    text = config.labelSettingsSubtitle,
                     color = PortPalette.textTertiary,
                     style = PortType.rowSub
                 )
@@ -470,6 +468,7 @@ private fun ToggleRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
+            .portClickable(haptic = true) { onChange(!checked) }
     ) {
         Column(Modifier.weight(1f)) {
             Text(
@@ -488,7 +487,7 @@ private fun ToggleRow(
         Spacer(Modifier.width(12.dp))
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
+            onCheckedChange = null,
             colors = SwitchDefaults.colors(
                 checkedTrackColor = accent,
                 checkedThumbColor = PortPalette.onAccent,
@@ -571,7 +570,6 @@ private fun SelectionSummary(state: DataSelectionUiState) {
 
 @Composable
 private fun DangerButton(label: String, enabled: Boolean, onClick: () -> Unit) {
-    val haptics = LocalHapticFeedback.current
     val red = PortPalette.error
     Box(
         modifier = Modifier

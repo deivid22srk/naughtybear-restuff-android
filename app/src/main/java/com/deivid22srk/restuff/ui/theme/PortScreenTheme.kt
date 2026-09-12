@@ -66,8 +66,8 @@ object PortPalette {
     /** Erro (dados ausentes, permissão revogada). */
     val error = Color(0xFFFF6B6B)
 
-    /** Contorno de chip não-selecionado (branco a 28% — affordance ≥3:1
-     *  sobre carvão, WCAG 1.4.11 para elementos não-texto). */
+    /** Contorno de chip não-selecionado (branco a 28%) — decorativo: a
+     *  affordance é sustentada pelo TEXTO do chip (6.1:1 sobre carvão). */
     val ghostBorder = Color(0x47FFFFFF)
 
     /** Contorno de botão fantasma em destaque (empty state — branco a 40%). */

@@ -35,7 +35,7 @@ import com.deivid22srk.restuff.viewmodel.DataPhase
  * "Mel & Carvão":
  *
  *   - dados prontos → botão SÓLIDO no accent (texto carvão) com glifo de play;
- *   - sem dados     → botão FANTASMA EM DESTAQUE (borda 32%) convidando à
+ *   - sem dados     → botão FANTASMA EM DESTAQUE (borda 40%) convidando à
  *                     seleção — no empty state este é o único caminho, então
  *                     ele não pode ser o elemento mais fraco da tela;
  *   - validando     → fantasma translúcido (alpha 0.6) com spinner fino.
