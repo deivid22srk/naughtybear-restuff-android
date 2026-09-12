@@ -158,6 +158,25 @@ cmake -S "$ROOT/native" -B "$BUILD_OUT" \
     -DGLSLC_EXECUTABLE="$GLSLC_HOST"
 cmake --build "$BUILD_OUT" --parallel "$(nproc)"
 
+# ARM PERF/diagnóstico: o alvo restuff compila com -gline-tables-only
+# (crash backtraces resolvíveis offline). As tabelas (~+85MB neste código
+# recompilado) NÃO podem ir para o APK de todo usuário — e o AGP deste
+# runner não consegue stripar nada (log: "Unable to strip ... packaging
+# them as are"). Então: preserva o build COM debug num artefato separado
+# (librestuff.so.unstripped — o CI o upa como "debug-symbols") e entrega ao
+# APK a versão stripada. llvm-strip --strip-debug remove SÓ .debug_*;
+# .dynsym (símbolos JNI), .eh_frame (unwind do crash handler) e todo o
+# código/rodata ficam intactos — sem efeito em runtime.
+LLVM_STRIP=$(find "$NDK_DIR/toolchains/llvm/prebuilt" -name llvm-strip \
+    -type f 2>/dev/null | head -1)
+if [[ -n "$LLVM_STRIP" ]]; then
+    cp "$BUILD_OUT/librestuff.so" "$BUILD_OUT/librestuff.so.unstripped"
+    "$LLVM_STRIP" --strip-debug "$BUILD_OUT/librestuff.so"
+    echo "  librestuff: line tables preservadas em librestuff.so.unstripped; APK recebe a lib stripada"
+else
+    echo "AVISO: llvm-strip não encontrado no NDK — APK incluirá as line tables (+~85MB)" >&2
+fi
+
 # --- [3] Empacotar jniLibs -------------------------------------------------
 cp "$BUILD_OUT/librestuff.so" "$JNILIBS_DIR/"
 # O SDK constrói rexruntime como SHARED e despeja binários em

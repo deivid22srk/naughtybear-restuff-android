@@ -86,13 +86,12 @@ android {
             // para arquivos reais (o hook falha e o driver do sistema é
             // usado em silêncio, ou 0 devices são enumerados).
             useLegacyPackaging = true
-            // ARM PERF/diagnóstico: preserva as line tables (-gline-tables-
-            // only do alvo restuff) no APK. Sem isto o llvm-strip do AGP pode
-            // remover .debug_line da lib embalada — e o CI só distribui APK,
-            // o .so não-stripado ficaria inacessível. Com as tabelas no APK,
-            // qualquer backtrace "module+0xOFFSET" do crash handler vira
-            // arquivo:linha offline via llvm-symbolizer contra o próprio APK.
-            keepDebugSymbols += "**/librestuff.so"
+            // NOTA (ARM PERF/diagnóstico): as line tables do librestuff.so
+            // NÃO ficam no APK — o build_android_native.sh stripa --strip-debug
+            // a lib para o jniLibs e preserva a versão com debug em
+            // librestuff.so.unstripped, que o CI upa como artefato separado
+            // "naughtybear-restuff-debug-symbols". Backtraces "module+0xOFFSET"
+            // se resolvem offline com llvm-symbolizer contra ESSE artefato.
         }
     }
 }

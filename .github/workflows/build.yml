@@ -105,6 +105,16 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
+      - name: Upload debug symbols (librestuff.so.unstripped)
+        # ARM PERF/diagnóstico: line tables do build (-gline-tables-only).
+        # O APK recebe a lib stripada (lean); ESTE artefato resolve backtraces
+        # "module+0xOFFSET" offline: llvm-symbolizer --obj=librestuff.so.unstripped 0xOFFSET
+        uses: actions/upload-artifact@v4
+        with:
+          name: naughtybear-restuff-debug-symbols
+          path: build/android/*/librestuff.so.unstripped
+          if-no-files-found: warn
+
       - name: Upload build logs em falha
         if: failure()
         uses: actions/upload-artifact@v4

@@ -130,12 +130,15 @@ target_include_directories(restuff PRIVATE
 # ARM PERF/diagnóstico: -gline-tables-only (era -g0). O crash handler do port
 # (android_main.cpp, _Unwind_Backtrace) imprime "módulo+0xOFFSET" usando a
 # tabela dinâmica (dladdr) — com -g0 esses endereços nunca viram arquivo:linha
-# em lugar nenhum. Com line tables preservadas no APK (ver keepDebugSymbols em
-# app/build.gradle.kts — sem ele o AGP stripa .debug_line) qualquer backtrace
-# de produção se resolve OFFLINE com llvm-symbolizer contra o próprio APK.
-# Custo: ~1-3% de tamanho no .so. Flag clang-only: g++ não conhece o nível
-# (verificado) — o generator expr recai em -g0 no GCC. -fno-omit-frame-pointer
-# abaixo mantém o unwind caminhável.
+# em lugar nenhum. Com line tables, o build preserva librestuff.so.unstripped
+# (o APK recebe a lib stripada via llvm-strip --strip-debug no
+# scripts/build_android_native.sh; o CI upa os símbolos como artefato separado
+# "naughtybear-restuff-debug-symbols") e qualquer backtrace de produção se
+# resolve OFFLINE com llvm-symbolizer contra esse artefato. Custo medido:
+# +85MB apenas no artefato de símbolos — zero no APK e zero em runtime (as
+# seções .debug_* não são mapeadas pelo loader). Flag clang-only: g++ não
+# conhece o nível (verificado) — o generator expr recai em -g0 no GCC.
+# -fno-omit-frame-pointer abaixo mantém o unwind caminhável.
 target_compile_options(restuff PRIVATE
     $<$<CXX_COMPILER_ID:Clang,AppleClang>:-gline-tables-only>
     $<$<CXX_COMPILER_ID:GNU>:-g0>
