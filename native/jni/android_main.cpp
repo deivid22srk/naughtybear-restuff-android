@@ -395,6 +395,44 @@ int main(int argc, char** argv) {
       setenv("RESTUFF_SPVCACHE_FILE", spv.c_str(), 1);
       setenv("RESTUFF_PIPE_CACHE", pipe.c_str(), 1);
       setenv("RESTUFF_PREWARM_FILE", prewarm.c_str(), 1);
+    } else if (strncmp(a, "--env=", 6) == 0) {
+      // perf/sd695-30fps v2 (15-e3): pass-through genérico KEY=VALUE para
+      // qualquer variável RESTUFF_*/REX_* — A/B de diagnóstico
+      // (RESTUFF_NO_GPUPASS, RESTUFF_NO_PIPELINED, ...) sem rebuild. Cada
+      // aplicação é logada: a corrida carrega a própria configuração.
+      const char* kv = a + 6;
+      if (const char* eq = strchr(kv, '=')) {
+        const std::string key(kv, eq - kv);
+        setenv(key.c_str(), eq + 1, 1);
+        ALOG("[env] %s", a + 6);
+      }
+    }
+  }
+
+  // perf/sd695-30fps v2 (15-e3): overrides de env de diagnóstico a partir de
+  // <files>/perf_env.txt (linhas KEY=VALUE; '#' comenta; linha vazia ignora).
+  // Mesma motivação do --env=: a CORRIDA DE CONTROLE da instrumentação
+  // always-on tem que ser possível sem rebuild — com o arquivo, o usuário
+  // cria um texto com "RESTUFF_NO_GPUPASS=1" em
+  // Android/data/com.deivid22srk.restuff/files/ com qualquer gerenciador de
+  // arquivos e a próxima sessão roda o A/B. Cada linha aplicada é logada
+  // (ALOG + espelha no logcat) para que o log de campo seja auto-descritivo.
+  if (app_files_dir != nullptr) {
+    char env_path[512];
+    snprintf(env_path, sizeof(env_path), "%s/perf_env.txt", app_files_dir);
+    if (FILE* f = fopen(env_path, "r")) {
+      char line[512];
+      while (fgets(line, sizeof(line), f)) {
+        if (char* nl = strchr(line, '\n')) *nl = '\0';
+        if (char* cr = strchr(line, '\r')) *cr = '\0';
+        if (line[0] == '#' || line[0] == '\0') continue;
+        char* eq = strchr(line, '=');
+        if (!eq || eq == line) continue;
+        *eq = '\0';
+        setenv(line, eq + 1, 1);
+        ALOG("[perf_env] %s=%s", line, eq + 1);
+      }
+      fclose(f);
     }
   }
 

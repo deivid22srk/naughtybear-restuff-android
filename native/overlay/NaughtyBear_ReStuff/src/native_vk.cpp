@@ -11306,16 +11306,21 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
             // publish, wrapper, fence-only submit) or paints charged to other
             // threads. paints= is the paint count delta (≈30 when paint runs
             // in this thread per present; 0 = paint moved off-thread or
-            // stalled).
-            namespace rvk = ::rex::ui::vulkan;
+            // stalled). 15-e3: the FIRST line reports sdk_paint=0.0(0) --
+            // zeroing the snapshot lazily -- because its window would
+            // otherwise span every boot paint and quote a meaningless
+            // average (15-e2 review: "the first line is the one a hurried
+            // reader quotes").
             static uint64_t s_sdk_prev_n = 0, s_sdk_prev_us = 0;
+            static bool s_sdk_first = true;
             const uint64_t sdk_n = ::rex::ui::vulkan::GetSdkmsPaintCount();
             const uint64_t sdk_us = ::rex::ui::vulkan::GetSdkmsPaintTotalUs();
-            const uint64_t sdk_dn = sdk_n - s_sdk_prev_n;
+            const uint64_t sdk_dn = s_sdk_first ? 0 : sdk_n - s_sdk_prev_n;
             const double sdk_paint_ms =
                 sdk_dn ? double(sdk_us - s_sdk_prev_us) / double(sdk_dn) / 1000.0 : 0.0;
             s_sdk_prev_n = sdk_n;
             s_sdk_prev_us = sdk_us;
+            s_sdk_first = false;
             REXLOG_INFO(
                 "[FRAMEMS] fps={:.1f} cyc={:.1f}ms wait={:.1f} fence={:.1f} prep={:.1f} "
                 "rec={:.1f} wb={:.1f} sdk={:.1f} sdk_paint={:.1f}({} paints) gpuq={:.1f} | "
