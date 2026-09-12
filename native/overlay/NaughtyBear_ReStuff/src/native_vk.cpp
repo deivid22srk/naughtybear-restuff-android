@@ -1820,14 +1820,12 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
       g_fm_cb_end = std::chrono::steady_clock::time_point{};
       PresentClearFrame();
       // [FRAMEMS]: SDK epilogue = our callback's return -> back here (the
-      // presenter's ImGui pass / guest-output blit / publish, per M3.135), and
-      // back_t marks where WORK ends -- everything after it until the next
-      // callback entry is `wait`.
+      // presenter's ImGui pass / guest-output blit / publish, per M3.135).
+      // (back_t -- the wait anchor -- is set after the DUMPGO block below.)
       if (g_fm_cb_end.time_since_epoch().count()) {
         g_fm_sdk_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - g_fm_cb_end)
                                       .count());
-        g_fm_back_t = std::chrono::steady_clock::now();
       }
       last_present = frame_start;
       // M3.313 (RESTUFF_DUMPGO=<dir>): smudge ground truth. Every ~2s, dump the
@@ -1868,6 +1866,12 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
             }
           }
         }
+      }
+      // [FRAMEMS]: end of this iteration's WORK -- placed after the opt-in
+      // DUMPGO block so its (rare, diagnostic) PPM capture does not count as
+      // idle, and immediately before the pacing sleep so the sleep does.
+      if (g_fm_cb_end.time_since_epoch().count()) {
+        g_fm_back_t = std::chrono::steady_clock::now();
       }
       if (s_legacy_sleep) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -11199,9 +11203,11 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         }
         // [FRAMEMS]: 30-present summary, always on (kill: RESTUFF_NO_FRAMEMS=1).
         // fps from cyc; wait = idle between presents (pacing sleep + frame
-        // waits + SDK prologue); fence+prep+rec+wb+sdk+wait ≈ cyc (residual =
-        // pacing sleep overshoot + loop overhead). gpuq is the GPU frame +
-        // queue wait of the PREVIOUS submit on the same slot.
+        // waits + SDK prologue). fence+prep+rec+wb+sdk+wait ≈ cyc; the
+        // residual is the callback's own epilogue (GpCollect, retire lists,
+        // PollModDir, this logging) plus pacing-sleep overshoot and loop
+        // overhead. gpuq is the GPU frame + queue wait of the PREVIOUS submit
+        // on the same slot.
         {
           static const bool s_no_fm = getenv("RESTUFF_NO_FRAMEMS") != nullptr;
           if (!s_no_fm && g_fm_n >= 30) {

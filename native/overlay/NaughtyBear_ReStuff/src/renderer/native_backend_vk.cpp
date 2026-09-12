@@ -2143,7 +2143,8 @@ void CaptureTranslatedDraw(uint32_t initiator, uint32_t idx_base_phys) {
     // into a hit. Keys stay exact by construction (gen counts ALU writes,
     // bases fold into the low bits), so a hit reuses bit-identical immutable
     // blocks -- the same M4.2 soundness contract, extended across rebinds.
-    // RESTUFF_SNAPRING=<n> tunes capacity (1 = the legacy single-entry A/B).
+    // RESTUFF_SNAPRING=<n> tunes capacity (1 = the legacy single-entry A/B);
+    // values outside [1, 64] fall back to the default 16.
     static const int kSnapN = [] {
       const char* e = getenv("RESTUFF_SNAPRING");
       const int n = e ? std::atoi(e) : 16;
