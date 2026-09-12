@@ -28,6 +28,7 @@ fun Modifier.portClickable(
     enabled: Boolean = true,
     haptic: Boolean = false,
     minTouchTarget: Boolean = false,
+    role: androidx.compose.ui.semantics.Role? = null,
     onClick: () -> Unit,
 ): Modifier = composed {
     val interactionSource = remember { MutableInteractionSource() }
@@ -50,7 +51,8 @@ fun Modifier.portClickable(
         .clickable(
             interactionSource = interactionSource,
             indication = null,
-            enabled = enabled
+            enabled = enabled,
+            role = role
         ) {
             if (haptic) {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)

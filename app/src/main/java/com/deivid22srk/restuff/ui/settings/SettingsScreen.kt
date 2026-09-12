@@ -17,9 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -306,7 +304,7 @@ fun SettingsScreen(
             SectionHeader("Tela inicial")
 
             ToggleRow(
-                label = "Reduzir movimento",
+                label = config.labelToggleMotion,
                 subtitle = "Desativa as animações de entrada",
                 checked = settings.reduceMotionOverride,
                 onChange = { checked ->
@@ -468,7 +466,9 @@ private fun ToggleRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .portClickable(haptic = true) { onChange(!checked) }
+            .portClickable(haptic = true, role = androidx.compose.ui.semantics.Role.Switch) {
+                onChange(!checked)
+            }
     ) {
         Column(Modifier.weight(1f)) {
             Text(
@@ -817,14 +817,16 @@ private fun DriverOptionRow(
                 text = title,
                 color = PortPalette.textPrimary,
                 style = PortType.rowLabel,
-                maxLines = 1
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
             if (subtitle.isNotBlank()) {
                 Text(
                     text = subtitle,
                     color = PortPalette.textSecondary,
                     style = PortType.rowSub,
-                    maxLines = 1
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
             }
         }
