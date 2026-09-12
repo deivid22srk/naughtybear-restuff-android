@@ -397,9 +397,16 @@ int main(int argc, char** argv) {
       setenv("RESTUFF_PREWARM_FILE", prewarm.c_str(), 1);
     } else if (strncmp(a, "--env=", 6) == 0) {
       // perf/sd695-30fps v2 (15-e3): pass-through genérico KEY=VALUE para
-      // qualquer variável RESTUFF_*/REX_* — A/B de diagnóstico
-      // (RESTUFF_NO_GPUPASS, RESTUFF_NO_PIPELINED, ...) sem rebuild. Cada
-      // aplicação é logada: a corrida carrega a própria configuração.
+      // variáveis RESTUFF_* lidas por statics FUNCIONAIS (inicializados na
+      // primeira chamada, depois do SDL_main — a imensa maioria: todos os
+      // gates de diagnóstico do native_vk/hooks/xma/xthread/presenter).
+      // EXCEÇÕES conhecidas (statics de ESCOPO DE NAMESPACE, avaliados no
+      // dlopen do librestuff.so, ANTES daqui — o override aqui não os alcança):
+      // RESTUFF_DUMP_DRAWS, RESTUFF_EXT_TRUE, RESTUFF_EXTQPROBE
+      // (native_backend_vk.cpp). Cada aplicação é logada via ALOG e
+      // espelhada no log de ARQUIVO pela linha [ENV] (RestuffEnvSummary varre
+      // environ no início do present thread) — a corrida carrega a própria
+      // configuração.
       const char* kv = a + 6;
       if (const char* eq = strchr(kv, '=')) {
         const std::string key(kv, eq - kv);
@@ -410,13 +417,17 @@ int main(int argc, char** argv) {
   }
 
   // perf/sd695-30fps v2 (15-e3): overrides de env de diagnóstico a partir de
-  // <files>/perf_env.txt (linhas KEY=VALUE; '#' comenta; linha vazia ignora).
-  // Mesma motivação do --env=: a CORRIDA DE CONTROLE da instrumentação
-  // always-on tem que ser possível sem rebuild — com o arquivo, o usuário
-  // cria um texto com "RESTUFF_NO_GPUPASS=1" em
+  // <files>/perf_env.txt (linhas KEY=VALUE; '#' comenta; linha vazia e espaço
+  // em branco à esquerda ignorados). Mesma motivação do --env=: a CORRIDA DE
+  // CONTROLE da instrumentação always-on tem que ser possível sem rebuild —
+  // com o arquivo, o usuário cria um texto com "RESTUFF_NO_GPUPASS=1" em
   // Android/data/com.deivid22srk.restuff/files/ com qualquer gerenciador de
   // arquivos e a próxima sessão roda o A/B. Cada linha aplicada é logada
-  // (ALOG + espelha no logcat) para que o log de campo seja auto-descritivo.
+  // (ALOG + aparece no log de ARQUIVO via [ENV]) para que o log de campo
+  // seja auto-descritivo. Vars RESTUFF_* setadas aqui sobrevivem até a linha
+  // [ENV] — exceto as 3 exceções de statics de load-time (ver comentário do
+  // --env=). RENOMEIE/APAGUE o arquivo após o A/B: um arquivo esquecido
+  // re-aplica silenciosamente a cada sessão (detectável pela [ENV]).
   if (app_files_dir != nullptr) {
     char env_path[512];
     snprintf(env_path, sizeof(env_path), "%s/perf_env.txt", app_files_dir);
@@ -425,12 +436,16 @@ int main(int argc, char** argv) {
       while (fgets(line, sizeof(line), f)) {
         if (char* nl = strchr(line, '\n')) *nl = '\0';
         if (char* cr = strchr(line, '\r')) *cr = '\0';
-        if (line[0] == '#' || line[0] == '\0') continue;
-        char* eq = strchr(line, '=');
-        if (!eq || eq == line) continue;
+        // 15-e4: trim de espaços/tabs à esquerda — " KEY=1" com indentação
+        // setava uma var com espaço no nome (inócua mas confusa no [ENV]).
+        char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p == '#' || *p == '\0') continue;
+        char* eq = strchr(p, '=');
+        if (!eq || eq == p) continue;
         *eq = '\0';
-        setenv(line, eq + 1, 1);
-        ALOG("[perf_env] %s=%s", line, eq + 1);
+        setenv(p, eq + 1, 1);
+        ALOG("[perf_env] %s=%s", p, eq + 1);
       }
       fclose(f);
     }
