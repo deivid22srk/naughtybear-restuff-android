@@ -71,6 +71,23 @@ REXCVAR_DECLARE(bool, use_translated_shaders);  // defined in native_backend_vk.
 REXCVAR_DECLARE(bool, tex_dump);                // defined in renderer/texture_mods.cpp
 
 namespace restuff::native { uint64_t CurrentPsHashForDebug(); }
+
+// 15-e2 (GLOBAL scope -- inside namespace restuff this would reopen it as
+// restuff::rex): SDKMS cumulative paint counters, defined in the
+// vulkan_presenter.cpp overlay (see [SDKMS] there). Declared outside any SDK
+// header because the overlay mechanism replaces whole files and keeps
+// upstream headers clean. Consumed by the [FRAMEMS] logger to report
+// sdk_paint= next to sdk= (the residual is the SDK epilogue spent outside
+// PaintAndPresentImpl: mailbox publish, wrapper, fence-only submit).
+namespace rex {
+namespace ui {
+namespace vulkan {
+uint64_t GetSdkmsPaintCount();
+uint64_t GetSdkmsPaintTotalUs();
+}  // namespace vulkan
+}  // namespace ui
+}  // namespace rex
+
 namespace restuff {
 
 namespace vk = rex::ui::vulkan;
@@ -6259,10 +6276,18 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
   // it touches the queue mutex, so it is not the Xvfb artifact. Time the five
   // top-level stages so the expensive one is named rather than guessed at.
   // M3.135c + perf/sd695-30fps v2: PREPMS is ALWAYS ON (RESTUFF_NO_PREPMS=1
-  // disables) -- the field log3 showed prep=15-59ms/frame (35ms avg) with no
-  // split available because the env gate was off; ~5 steady_clock reads per
-  // frame are negligible and the split decides the next CPU-side strike.
-  static const bool s_pp = getenv("RESTUFF_NO_PREPMS") == nullptr;
+  // disables -- note it also disables the per-draw [PREPLOOP] report, which
+  // shares this gate) -- the field log3 showed prep=15-59ms/frame (35ms avg)
+  // with no split available because the env gate was off; ~5 steady_clock
+  // reads per frame are negligible and the split decides the next CPU-side
+  // strike. 15-e2: RESTUFF_PREPMS (legacy opt-in) is now a silent no-op --
+  // warn so a field harness still exporting it isn't misled.
+  static const bool s_pp = [] {
+    if (getenv("RESTUFF_PREPMS"))
+      REXLOG_WARN("[PREPMS] RESTUFF_PREPMS is a legacy no-op (PREPMS is always on now); "
+                  "use RESTUFF_NO_PREPMS=1 to disable");
+    return getenv("RESTUFF_NO_PREPMS") == nullptr;
+  }();
   auto _pp_now = [] { return std::chrono::steady_clock::now(); };
   const auto _pp_a = _pp_now();
   auto _pp_b = _pp_a, _pp_c = _pp_a, _pp_d = _pp_a, _pp_e = _pp_a;
@@ -9795,19 +9820,31 @@ namespace {
 enum GpCat : uint8_t { kGpUpload, kGpMain, kGpAux, kGpResolve, kGpTone, kGpPresent, kGpNumCats };
 struct GpuPassDiag {
   static constexpr uint32_t kMaxStamps = 256;
-  static constexpr uint32_t kSlots = 4;  // >= cmd_bufs_ frame slots in flight
+  // 15-e2: cmd_bufs_ ping-pongs 2 slots today; 4 leaves headroom. If the
+  // slot count ever exceeds kSlots the & (kSlots-1) masks alias pools --
+  // extend kSlots (keep it a power of two) together with the frame slots.
+  static constexpr uint32_t kSlots = 4;
   VkQueryPool pool[kSlots] = {};
   bool broken = false;         // pool creation failed -- stay off for good
   uint8_t cat[kSlots][kMaxStamps] = {};
   uint32_t n[kSlots] = {};     // stamps recorded for that slot's live frame (0 = not begun)
   uint32_t dropped = 0;
+  uint32_t read_fail = 0;      // 15-e2: vkGetQueryPoolResults failures (stamps silently lost)
   double period_ns = 0.0;
   uint64_t acc_us[kGpNumCats] = {};
   uint64_t frames = 0;
 };
 GpuPassDiag g_gp;
 bool GpOn() {
-  static const bool on = getenv("RESTUFF_NO_GPUPASS") == nullptr;
+  // 15-e2: warn on the legacy opt-in env -- it silently did nothing since
+  // this diag became always-on, and a field harness still exporting it would
+  // think it had GPUPASS when it now always does.
+  static const bool on = [] {
+    if (getenv("RESTUFF_GPUPASS_MS"))
+      REXLOG_WARN("[GPUPASS] RESTUFF_GPUPASS_MS is a legacy no-op (GPUPASS is always on "
+                  "now); use RESTUFF_NO_GPUPASS=1 to disable");
+    return getenv("RESTUFF_NO_GPUPASS") == nullptr;
+  }();
   return on;
 }
 void GpFrameBegin(vk::VulkanDevice* dev, VkCommandBuffer cmd) {
@@ -9819,20 +9856,33 @@ void GpFrameBegin(vk::VulkanDevice* dev, VkCommandBuffer cmd) {
     dev->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(dev->physical_device(),
                                                                       &pp);
     if (g_gp.period_ns <= 0.0) g_gp.period_ns = pp.limits.timestampPeriod;
+    // 15-e2: timestamp support is a PER-QUEUE-FAMILY property (Limits has no
+    // timestampValidBits). timestampValidBits==0 means this family cannot
+    // write timestamp queries at all -- deltas would read as plausible-
+    // looking garbage instead of failing loudly. Refuse to run instead.
+    uint32_t qf_n = 0;
+    dev->vulkan_instance()->functions().vkGetPhysicalDeviceQueueFamilyProperties(
+        dev->physical_device(), &qf_n, nullptr);
+    std::vector<VkQueueFamilyProperties> qfp(qf_n ? qf_n : 1);
+    dev->vulkan_instance()->functions().vkGetPhysicalDeviceQueueFamilyProperties(
+        dev->physical_device(), &qf_n, qfp.data());
+    const uint32_t qf = dev->queue_family_graphics_compute();
+    const uint32_t valid_bits = (qf_n && qf < qf_n) ? qfp[qf].timestampValidBits : 0;
     VkQueryPoolCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = GpuPassDiag::kMaxStamps;
-    if (g_gp.period_ns <= 0.0 ||
+    if (valid_bits == 0 || g_gp.period_ns <= 0.0 ||
         df.vkCreateQueryPool(dev->device(), &ci, nullptr, &g_gp.pool[slot]) != VK_SUCCESS) {
-      REXLOG_ERROR("[GPUPASS] timestamp queries unavailable (period={}ns) -- diag disabled",
-                   g_gp.period_ns);
+      REXLOG_ERROR("[GPUPASS] timestamp queries unavailable (period={}ns validBits={}) -- "
+                   "diag disabled",
+                   g_gp.period_ns, valid_bits);
       g_gp.pool[slot] = VK_NULL_HANDLE;
       g_gp.broken = true;
       return;
     }
-    REXLOG_INFO("[GPUPASS] GPU per-pass timing on ({}ns/tick, per-slot pools)",
-                g_gp.period_ns);
+    REXLOG_INFO("[GPUPASS] GPU per-pass timing on ({}ns/tick, validBits={}, per-slot pools)",
+                g_gp.period_ns, valid_bits);
   }
   df.vkCmdResetQueryPool(cmd, g_gp.pool[slot], 0, GpuPassDiag::kMaxStamps);
   df.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gp.pool[slot], 0);
@@ -9864,24 +9914,27 @@ void GpCollectSlot(vk::VulkanDevice* dev, uint32_t slot) {
   if (dev->functions().vkGetQueryPoolResults(dev->device(), g_gp.pool[slot], 0, n, sizeof(ts),
                                              ts, sizeof(uint64_t),
                                              VK_QUERY_RESULT_64_BIT |
-                                                 VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS)
+                                                 VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) {
+    ++g_gp.read_fail;  // 15-e2: count instead of silently dropping the frame
     return;
+  }
   for (uint32_t k = 1; k < n; ++k) {
     const uint64_t dt = ts[k] >= ts[k - 1] ? ts[k] - ts[k - 1] : 0;
     g_gp.acc_us[g_gp.cat[slot][k]] += uint64_t(double(dt) * g_gp.period_ns / 1000.0);
   }
   if (++g_gp.frames % 30 == 0) {
     REXLOG_INFO("[GPUPASS] 30-frame avg GPU: main={}us aux={}us resolve={}us tone={}us "
-                "present={}us upload={}us total={}us{}",
+                "present={}us upload={}us total={}us readfail={}{}",
                 g_gp.acc_us[kGpMain] / 30, g_gp.acc_us[kGpAux] / 30,
                 g_gp.acc_us[kGpResolve] / 30, g_gp.acc_us[kGpTone] / 30,
                 g_gp.acc_us[kGpPresent] / 30, g_gp.acc_us[kGpUpload] / 30,
                 (g_gp.acc_us[kGpMain] + g_gp.acc_us[kGpAux] + g_gp.acc_us[kGpResolve] +
                  g_gp.acc_us[kGpTone] + g_gp.acc_us[kGpPresent] + g_gp.acc_us[kGpUpload]) /
                     30,
-                g_gp.dropped ? " (stamp budget exceeded; tail lumped)" : "");
+                g_gp.read_fail, g_gp.dropped ? " (stamp budget exceeded; tail lumped)" : "");
     for (auto& a : g_gp.acc_us) a = 0;
     g_gp.dropped = 0;
+    g_gp.read_fail = 0;
   }
 }
 }  // namespace
@@ -10695,7 +10748,7 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           // M4.33b: this slot's PREVIOUS frame is now provably complete (its
           // fence just passed) -- collect its GPU pass times here; the read
           // cannot stall the GPU.
-          GpCollectSlot(dev, frame_slot_ & 3);
+          GpCollectSlot(dev, TL().slot_ix & 3);
         }
 
         // Resolve textures + build the frame's draws (may queue staging uploads
@@ -11039,6 +11092,15 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
                     fm_sw1 - g_fm_sub_t[frame_slot_])
                     .count());
           }
+          // M4.33b (15-e2 fix): serialized-only collect, INSIDE the fence-wait
+          // block. The 15-e1 review caught the previous placement (after the
+          // writebacks, ungated) reading the CURRENT frame's pool with
+          // WAIT_BIT in pipelined mode -- blocking the present thread on the
+          // GPU it had submitted microseconds earlier, silently re-serializing
+          // the pipeline and hiding the stall in no FRAMEMS bucket. In
+          // pipelined mode the head collect (after this slot's fence wait)
+          // is the ONLY live site.
+          GpCollectSlot(dev, frame_slot_ & 3);
         }
         const auto _p_wb0 = std::chrono::steady_clock::now();
 
@@ -11053,8 +11115,8 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
                   std::chrono::steady_clock::now() - fm_wb0)
                   .count());
         }
-        // GPU done (serialized): collect this slot's GPU pass times.
-        GpCollectSlot(dev, TL().slot_ix & 3);
+        // (15-e2 fix: the serialized GpCollectSlot moved UP into the
+        // !pipelined fence-wait block -- see the comment there.)
         if (s_pms2) {
           const auto now = std::chrono::steady_clock::now();
           auto us = [](auto a, auto b) {
@@ -11237,9 +11299,27 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           static const bool s_no_fm = getenv("RESTUFF_NO_FRAMEMS") != nullptr;
           if (!s_no_fm && g_fm_n >= 30) {
             const double n = double(g_fm_n);
+            // 15-e2: reconcile the sdk bucket against the SDK-side paint
+            // implementation (vulkan_presenter.cpp [SDKMS]): sdk_paint is the
+            // time actually inside PaintAndPresentImpl during this 30-frame
+            // window; sdk - sdk_paint = the SDK epilogue OUTSIDE it (mailbox
+            // publish, wrapper, fence-only submit) or paints charged to other
+            // threads. paints= is the paint count delta (≈30 when paint runs
+            // in this thread per present; 0 = paint moved off-thread or
+            // stalled).
+            namespace rvk = ::rex::ui::vulkan;
+            static uint64_t s_sdk_prev_n = 0, s_sdk_prev_us = 0;
+            const uint64_t sdk_n = ::rex::ui::vulkan::GetSdkmsPaintCount();
+            const uint64_t sdk_us = ::rex::ui::vulkan::GetSdkmsPaintTotalUs();
+            const uint64_t sdk_dn = sdk_n - s_sdk_prev_n;
+            const double sdk_paint_ms =
+                sdk_dn ? double(sdk_us - s_sdk_prev_us) / double(sdk_dn) / 1000.0 : 0.0;
+            s_sdk_prev_n = sdk_n;
+            s_sdk_prev_us = sdk_us;
             REXLOG_INFO(
                 "[FRAMEMS] fps={:.1f} cyc={:.1f}ms wait={:.1f} fence={:.1f} prep={:.1f} "
-                "rec={:.1f} wb={:.1f} sdk={:.1f} gpuq={:.1f} | draws/present={:.0f}",
+                "rec={:.1f} wb={:.1f} sdk={:.1f} sdk_paint={:.1f}({} paints) gpuq={:.1f} | "
+                "draws/present={:.0f}",
                 // perf/sd695-30fps v2: fps was 1000.0/(cyc_us/n) -- dividing by
                 // MICROseconds as if milliseconds, so every field log printed
                 // fps=0.0-0.1 regardless of the real rate (log3: cyc=117.6ms
@@ -11247,7 +11327,7 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
                 1e6 / (g_fm_cyc_us / n), g_fm_cyc_us / n / 1000.0,
                 g_fm_wait_us / n / 1000.0, g_fm_fence_us / n / 1000.0,
                 g_fm_prep_us / n / 1000.0, g_fm_rec_us / n / 1000.0,
-                g_fm_wb_us / n / 1000.0, g_fm_sdk_us / n / 1000.0,
+                g_fm_wb_us / n / 1000.0, g_fm_sdk_us / n / 1000.0, sdk_paint_ms, sdk_dn,
                 g_fm_gpuq_us / n / 1000.0, g_fm_draws / n);
             g_fm_cyc_us = g_fm_wait_us = g_fm_fence_us = 0;
             g_fm_prep_us = g_fm_rec_us = g_fm_wb_us = g_fm_sdk_us = 0;

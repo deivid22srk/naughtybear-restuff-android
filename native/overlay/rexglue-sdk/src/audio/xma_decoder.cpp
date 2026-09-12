@@ -354,6 +354,12 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
         // accepted as a no-op; a suppressed-count heartbeat keeps the
         // phenomenon visible at ~1 line/2min, and log_noisy=1 restores
         // per-write tracing for audio bring-up.
+        // 15-e2 note: the observed field values are 0x2/0x3 (log3 prints
+        // {:08X} of the raw value) while the upstream comment above says
+        // 0x02000000/0x03000000 -- either a byte-order presentation
+        // difference upstream or a different title build; irrelevant to the
+        // no-op either way, recorded here so the next auditor doesn't
+        // re-derive it.
         static std::atomic<uint64_t> s_lock_suppressed{0};
         if (++s_lock_suppressed % 100000 == 1) {
           REXAPU_INFO(

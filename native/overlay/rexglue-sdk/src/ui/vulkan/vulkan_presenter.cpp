@@ -124,6 +124,12 @@ namespace {
 struct SdkmsDiag {
   std::atomic<uint64_t> n{0};
   std::atomic<uint64_t> trk{0}, acq{0}, rec{0}, sub{0}, prs{0}, tot{0};
+  // 15-e2: never-reset cumulative mirrors -- lets the FRAMEMS logger (another
+  // translation unit) diff paint totals over its own 30-frame window and
+  // print sdk_paint= (the share of the sdk bucket actually spent inside
+  // PaintAndPresentImpl; the residual is the mailbox publish / wrapper /
+  // fence-only submit outside it).
+  std::atomic<uint64_t> n_all{0}, tot_all{0};
 };
 SdkmsDiag g_sdkms;
 struct SdkmsScope {
@@ -143,6 +149,8 @@ struct SdkmsScope {
         uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(t5 - t0).count());
     g_sdkms.n.fetch_add(1, std::memory_order_relaxed);
     g_sdkms.tot.fetch_add(tot, std::memory_order_relaxed);
+    g_sdkms.n_all.fetch_add(1, std::memory_order_relaxed);
+    g_sdkms.tot_all.fetch_add(tot, std::memory_order_relaxed);
     g_sdkms.trk.fetch_add(trk, std::memory_order_relaxed);
     g_sdkms.acq.fetch_add(acq, std::memory_order_relaxed);
     g_sdkms.rec.fetch_add(rec, std::memory_order_relaxed);
@@ -169,6 +177,13 @@ struct SdkmsScope {
   }
 };
 }  // namespace
+
+// [SDKMS] 15-e2: cumulative paint counters for cross-TU reconciliation --
+// consumed by the guest-output thread's [FRAMEMS] logger to report sdk_paint
+// (time actually inside PaintAndPresentImpl) next to sdk (the whole epilogue
+// bucket). Monotonic, never reset; readers diff across their own windows.
+uint64_t GetSdkmsPaintCount() { return g_sdkms.n_all.load(std::memory_order_relaxed); }
+uint64_t GetSdkmsPaintTotalUs() { return g_sdkms.tot_all.load(std::memory_order_relaxed); }
 
 // Generated with `xb buildshaders`.
 namespace shaders {
