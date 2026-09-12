@@ -71,13 +71,7 @@ fun CreditsButton(
         modifier = modifier
             .graphicsLayer { alpha = entrance.value }
             .heightIn(min = 48.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                onClick()
-            }
+            .portClickable(haptic = true) { onClick() }
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -108,7 +102,7 @@ fun CreditsDialog(onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(PortPalette.radiusLg),
             color = PortPalette.surface,
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -191,10 +185,7 @@ private fun LinkRow(link: PortLink, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
+            .portClickable { onClick() }
             .padding(vertical = 8.dp)
     ) {
         Icon(

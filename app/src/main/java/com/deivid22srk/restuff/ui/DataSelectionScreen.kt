@@ -9,10 +9,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,7 +31,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +47,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -63,6 +63,7 @@ import com.deivid22srk.restuff.ui.components.PrimarySelectButton
 import com.deivid22srk.restuff.ui.components.SettingsButton
 import com.deivid22srk.restuff.ui.components.StatusArea
 import com.deivid22srk.restuff.ui.components.TechStatusChip
+import com.deivid22srk.restuff.ui.components.portClickable
 import com.deivid22srk.restuff.ui.theme.PortPalette
 import com.deivid22srk.restuff.ui.theme.PortType
 import com.deivid22srk.restuff.viewmodel.DataPhase
@@ -190,8 +191,13 @@ private val ISO_MIME = arrayOf("application/octet-stream", "application/x-iso966
  * Tela inicial "Mel & Carvão": a arte cinematográfica do port esmaecida a
  * ~18% sob véu carvão (identidade sem ruído), UMA coluna centrada —
  * identidade → status → ação primária → convites secundários — e uma barra
- * inferior quieta (assinatura técnica mono + engrenagem). A mesma coluna
- * serve portrait e landscape (scrollable, safeDrawing, alvo 48dp+ em tudo).
+ * inferior quieta (assinatura técnica mono + engrenagem).
+ *
+ * Centralização SEM o bug clássico do Compose (verticalScroll +
+ * Arrangement.Center corta o topo quando o conteúdo estoura a tela):
+ * um spacer superior calculado a partir da altura disponível aproxima o
+ * centro quando sobra espaço e abre mão dele (24dp) quando estoura — o
+ * scroll então alcança TUDO (banner + fontes grandes + landscape).
  */
 @Composable
 fun DataSelectionScreen(
@@ -206,11 +212,17 @@ fun DataSelectionScreen(
     val config = PortBranding.config
     var creditsOpen by remember { mutableStateOf(false) }
 
-    Box(
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(PortPalette.background)
     ) {
+        // Altura de conteúdo estimada (título + status + CTA + convites);
+        // quando ela cabe, o spacer aproxima o centro ótico; quando não
+        // cabe, o spacer colapsa e o scroll alcança o primeiro item.
+        val topSpacer = ((maxHeight - 600.dp) / 2f).coerceIn(24.dp, 240.dp)
+        val ready = state.phase is DataPhase.Found
+
         // ---- Fundo: arte do port esmaecida + véu + brilho âmbar -----------
         DimmedBackdrop(artRes = config.backgroundArtRes, accent = config.accent)
 
@@ -224,12 +236,17 @@ fun DataSelectionScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-                    .padding(top = 16.dp, bottom = 96.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 96.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                AnimatedTitle(compact = false, reduceMotion = reduceMotion)
+                Spacer(Modifier.height(topSpacer))
+
+                AnimatedTitle(
+                    compact = false,
+                    reduceMotion = reduceMotion,
+                    tailAccent = !ready
+                )
 
                 Spacer(Modifier.height(26.dp))
 
@@ -240,7 +257,7 @@ fun DataSelectionScreen(
                     StorageAccessBanner(onGrant = onGrantStorage)
                 }
 
-                Spacer(Modifier.height(30.dp))
+                Spacer(Modifier.height(28.dp))
 
                 PrimarySelectButton(
                     phase = state.phase,
@@ -364,28 +381,29 @@ private fun BottomBar(onOpenSettings: () -> Unit, modifier: Modifier = Modifier)
 
 /**
  * Banner de permissão de armazenamento (fluxo de pasta SEM CÓPIA): cartão
- * carvão de borda âmbar sutil, texto curto e ação "Conceder" em texto.
- * Some sozinho quando a permissão é concedida (reavaliada a cada ON_RESUME).
+ * carvão de borda âmbar sutil, texto curto e um ÚNICO alvo — o cartão
+ * inteiro é clicável e a ação "Conceder →" em âmbar à direita indica o
+ * desfecho. Some sozinho quando a permissão é concedida (reavaliada a cada
+ * ON_RESUME). Micro-escala no pressed.
  *
  * Nota: serve apenas ao fluxo de PASTA. O fluxo de ISO (primário) roda o
  * disco onde está via grant do SAF — não exige esta permissão.
  */
 @Composable
 private fun StorageAccessBanner(onGrant: () -> Unit, modifier: Modifier = Modifier) {
-    val accent = PortBranding.config.accent
+    val config = PortBranding.config
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         modifier = modifier
             .widthIn(max = 420.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .heightIn(min = 56.dp)
+            .clip(RoundedCornerShape(PortPalette.radiusMd))
             .background(PortPalette.surface)
-            .padding(horizontal = 14.dp, vertical = 10.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onGrant() }
+            .border(1.dp, config.accent.copy(alpha = 0.22f), RoundedCornerShape(PortPalette.radiusMd))
+            .portClickable(haptic = true) { onGrant() }
+            .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         Text(
             text = "Para jogar direto da pasta, sem cópia, conceda o " +
@@ -394,13 +412,10 @@ private fun StorageAccessBanner(onGrant: () -> Unit, modifier: Modifier = Modifi
             style = PortType.rowSub,
             modifier = Modifier.weight(1f, fill = false)
         )
-        TextButton(
-            onClick = onGrant,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                horizontal = 10.dp, vertical = 4.dp
-            )
-        ) {
-            Text("Conceder", color = accent, style = PortType.rowLabel)
-        }
+        Text(
+            text = "Conceder →",
+            color = config.accent,
+            style = PortType.caption
+        )
     }
 }

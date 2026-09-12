@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.deivid22srk.restuff.config.PortBranding
 
@@ -55,8 +56,9 @@ object PortPalette {
     /** Texto secundário (subs, hints). */
     val textSecondary = Color(0xFF8E8E99)
 
-    /** Texto terciário (rótulos, metadados mono). */
-    val textTertiary = Color(0xFF5C5C66)
+    /** Texto terciário (rótulos, metadados mono) — #7E7E88 mantém ≥4.5:1
+     *  sobre o carvão (WCAG AA) mesmo em 10–11sp. */
+    val textTertiary = Color(0xFF7E7E88)
 
     /** Sucesso (dados prontos). */
     val success = Color(0xFF4ADE80)
@@ -66,6 +68,17 @@ object PortPalette {
 
     /** Contorno de botão fantasma (branco a 14%). */
     val ghostBorder = Color(0x24FFFFFF)
+
+    /** Contorno de botão fantasma em destaque (empty state — branco a 32%). */
+    val ghostBorderStrong = Color(0x52FFFFFF)
+
+    /** Texto sobre superfícies no accent ("onPrimary" do sistema Mel & Carvão). */
+    val onAccent = Color(0xFF141008)
+
+    /** Escala de raio: chips/linhas (Sm), CTA/banner (Md), diálogo (Lg). */
+    val radiusSm = 10.dp
+    val radiusMd = 12.dp
+    val radiusLg = 18.dp
 }
 
 /** Tipografia editorial do port — escala com contraste agressivo. */
@@ -115,6 +128,26 @@ object PortType {
         fontSize = 10.5.sp,
         lineHeight = 14.sp,
         letterSpacing = 2.5.sp
+    )
+
+    val chip = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.5.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.4.sp
+    )
+
+    val action = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.5.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.4.sp
+    )
+
+    val caption = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 13.sp,
+        lineHeight = 18.sp
     )
 
     val mono = TextStyle(

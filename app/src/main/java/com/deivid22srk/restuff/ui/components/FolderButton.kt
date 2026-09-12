@@ -1,7 +1,5 @@
 package com.deivid22srk.restuff.ui.components
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,18 +13,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.ui.theme.PortPalette
+import com.deivid22srk.restuff.ui.theme.PortType
 
 /**
  * AÇÃO SECUNDÁRIA da tela inicial no design "Mel & Carvão": um convite
  * quieto — texto discreto com glifo pequeno, sem caixa, sem borda. A
  * hierarquia fica clara por contraste tipográfico (o primário é sólido).
+ * Micro-escala no pressed via [portClickable].
  */
 @Composable
 fun FolderButton(
@@ -43,12 +41,9 @@ fun FolderButton(
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
+            .graphicsLayer { alpha = entrance.value }
             .heightIn(min = 48.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                enabled = enabled
-            ) { onClick() }
+            .portClickable(enabled = enabled) { onClick() }
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -62,8 +57,7 @@ fun FolderButton(
             Text(
                 text = config.labelSelectFolder,
                 color = if (enabled) PortPalette.textSecondary else PortPalette.textTertiary,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.Medium
+                style = PortType.chip
             )
         }
     }

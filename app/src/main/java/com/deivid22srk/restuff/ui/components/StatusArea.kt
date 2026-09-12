@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.ui.theme.PortPalette
@@ -153,7 +154,9 @@ private fun StatusLine(
                 text = detail,
                 color = PortPalette.textSecondary,
                 style = if (detailMono) PortType.mono else PortType.rowSub,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

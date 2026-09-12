@@ -27,14 +27,18 @@ import com.deivid22srk.restuff.ui.theme.PortType
  * Identidade da tela inicial no design "Mel & Carvão":
  *
  *   eyebrow em versalete → título display em duas linhas com pesos
- *   contrastantes (Light + Black, a última no accent) → LINHA DO MEL.
+ *   contrastantes (Light + Black) → LINHA DO MEL.
+ *
+ * Regra do alvo único: quando a ação primária está SÓLIDA no accent
+ * (dados prontos), o tail do título recua para off-white e o eyebrow para
+ * terciário — o âmbar cheio passa a pertencer SOLENTE ao botão. No empty
+ * state (botão fantasma), o tail volta ao accent como peso da tela.
  *
  * A entrada é uma única subida suave (alpha + 18dp), respeitando
- * "reduzir movimento". Sem glow, sem pulso — o título é o elemento
- * de peso da tela.
+ * "reduzir movimento". Sem glow, sem pulso.
  */
 @Composable
-fun AnimatedTitle(compact: Boolean, reduceMotion: Boolean) {
+fun AnimatedTitle(compact: Boolean, reduceMotion: Boolean, tailAccent: Boolean = true) {
     val config = PortBranding.config
     val entrance = rememberEntrance(120, reduceMotion)
 
@@ -45,10 +49,11 @@ fun AnimatedTitle(compact: Boolean, reduceMotion: Boolean) {
             translationY = (1f - entrance.value) * 18f
         }
     ) {
-        // ---- Eyebrow (versalete com o accent do port) ---------------------
+        // ---- Eyebrow: accent no empty state, terciário quando o CTA é
+        // sólido (o âmbar cheio pertence ao botão) ----------------------
         Text(
             text = config.portSubtitle.uppercase(),
-            color = config.accent.copy(alpha = 0.85f),
+            color = if (tailAccent) config.accent.copy(alpha = 0.85f) else PortPalette.textTertiary,
             style = PortType.label,
             textAlign = TextAlign.Center
         )
@@ -73,7 +78,7 @@ fun AnimatedTitle(compact: Boolean, reduceMotion: Boolean) {
         }
         Text(
             text = tail,
-            color = config.accent,
+            color = if (tailAccent) config.accent else PortPalette.textPrimary,
             style = PortType.displayStrong.copy(fontSize = displaySize),
             textAlign = TextAlign.Center
         )

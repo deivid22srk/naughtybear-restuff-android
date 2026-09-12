@@ -2,8 +2,6 @@ package com.deivid22srk.restuff.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -20,19 +18,16 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.ui.theme.PortPalette
+import com.deivid22srk.restuff.ui.theme.PortType
 import com.deivid22srk.restuff.viewmodel.DataPhase
 
 /**
@@ -40,11 +35,14 @@ import com.deivid22srk.restuff.viewmodel.DataPhase
  * "Mel & Carvão":
  *
  *   - dados prontos → botão SÓLIDO no accent (texto carvão) com glifo de play;
- *   - sem dados     → botão FANTASMA (hairline) convidando à seleção;
- *   - validando     → fantasma desabilitado com spinner fino.
+ *   - sem dados     → botão FANTASMA EM DESTAQUE (borda 32%) convidando à
+ *                     seleção — no empty state este é o único caminho, então
+ *                     ele não pode ser o elemento mais fraco da tela;
+ *   - validando     → fantasma translúcido (alpha 0.6) com spinner fino.
  *
  * Sem gradiente, sem glow: sólido quando pronto é o único momento de cor
- * cheia da tela — é isso que o torna o alvo.
+ * cheia da tela — é isso que o torna o alvo. Feedback: micro-escala no
+ * pressed via [portClickable] + haptic.
  */
 @Composable
 fun PrimarySelectButton(
@@ -56,7 +54,6 @@ fun PrimarySelectButton(
     modifier: Modifier = Modifier,
 ) {
     val config = PortBranding.config
-    val haptics = LocalHapticFeedback.current
     val entrance = rememberEntrance(260, reduceMotion)
 
     val ready = phase is DataPhase.Found
@@ -77,21 +74,22 @@ fun PrimarySelectButton(
                 translationY = (1f - entrance.value) * 14f
             }
             .heightIn(min = if (compact) 52.dp else 56.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(PortPalette.radiusMd))
             .background(if (ready) config.accent else Color.Transparent)
+            .alpha(if (validating) 0.6f else 1f)
             .border(
                 width = 1.dp,
-                color = if (ready) Color.Transparent else PortPalette.ghostBorder,
-                shape = RoundedCornerShape(12.dp)
+                color = when {
+                    ready -> Color.Transparent
+                    validating -> PortPalette.ghostBorder
+                    else -> PortPalette.ghostBorderStrong
+                },
+                shape = RoundedCornerShape(PortPalette.radiusMd)
             )
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                enabled = enabled
-            ) {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                onClick()
-            }
+            .portClickable(
+                enabled = enabled,
+                haptic = true
+            ) { onClick() }
             .padding(horizontal = 20.dp, vertical = 16.dp)
     ) {
         Row(
@@ -109,17 +107,15 @@ fun PrimarySelectButton(
                 Icon(
                     imageVector = Icons.Filled.PlayArrow,
                     contentDescription = config.contentDescPlay,
-                    tint = Color(0xFF141008),
+                    tint = PortPalette.onAccent,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(8.dp))
             }
             Text(
                 text = label,
-                color = if (ready) Color(0xFF141008) else PortPalette.textPrimary,
-                fontSize = 14.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.4.sp
+                color = if (ready) PortPalette.onAccent else PortPalette.textPrimary,
+                style = PortType.action
             )
         }
     }

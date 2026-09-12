@@ -2,28 +2,37 @@ package com.deivid22srk.restuff.game
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.compose.ui.graphics.toArgb
+import com.deivid22srk.restuff.config.PortBranding
 
 /**
  * Pill minimalista de FPS sobre o jogo — design "Mel & Carvão":
- * mono pequeno âmbar sobre carvão translúcido, canto superior direito.
+ * mono pequeno no accent do branding sobre carvão translúcido, canto
+ * superior direito (com respeito ao cutout/notch).
  *
  * A taxa é calculada sobre o CONTADOR REAL de presents Vulkan exposto pelo
- * motor via [NativeBridge.nativeGetPresentCount] (trampoline no
+ * motor via [NativeBridge.nativeGetPresentCount] (trampolim no
  * vulkan_device.cpp) — portanto mede o frame rate do MOTOR, não o vsync do
  * painel (Choreographer/FrameMetrics mediriam 60/120 do display, não o jogo).
  *
- * Sem JNI disponível (ex.: lib não carregada), mostra "—".
- * A view NÃO consome toques: TextView não-clicável deixa o evento passar
- * para a superfície SDL embaixo (overlays ImGui do jogo continuam funcionando).
+ * Detalhes de acabamento:
+ *  - minWidth fixo + gravity CENTER: "58 FPS · 17.2 ms" e "120 FPS · 8.3 ms"
+ *    ocupam a MESMA largura (sem "pulsar" da pill a cada poll);
+ *  - as cores vêm do [PortBranding.config] (a pill segue a identidade do
+ *    port, nada hardcoded);
+ *  - respeita displayCutout/safe insets no posicionamento;
+ *  - sem JNI disponível (lib não carregada) mostra "…" e não lança;
+ *  - NÃO consome toques: TextView não-clicável deixa o evento passar para
+ *    a superfície SDL embaixo (overlays ImGui do jogo continuam funcionando).
  */
 @SuppressLint("ViewConstructor")
 class FpsCounterView(context: Context) : TextView(context) {
@@ -41,18 +50,22 @@ class FpsCounterView(context: Context) : TextView(context) {
     }
 
     init {
+        val accent = PortBranding.config.accent
         setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-        setTextColor(Color.parseColor("#F2C14E"))
+        letterSpacing = 0.045f
+        setTextColor(accent.toArgb())
         text = DASH
+        gravity = Gravity.CENTER
+        minWidth = dp(110f).toInt()
         isClickable = false
         isFocusable = false
         contentDescription = "Contador de quadros por segundo do motor"
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(8f)
-            setColor(Color.parseColor("#B30A0A0E"))
-            setStroke(dp(1f).toInt(), Color.parseColor("#33F2C14E"))
+            setColor(0xB30A0A0E.toInt())
+            setStroke(dp(1f).toInt(), accent.copy(alpha = 0.20f).toArgb())
         }
         val hPad = dp(9f).toInt()
         val vPad = dp(4f).toInt()
@@ -89,7 +102,7 @@ class FpsCounterView(context: Context) : TextView(context) {
         lastNanos = now
 
         text = if (lastFps > 0.5) {
-            val frameMs = if (lastFps > 0.5) 1000.0 / lastFps else 0.0
+            val frameMs = 1000.0 / lastFps
             String.format(java.util.Locale.US, "%.0f FPS · %.1f ms", lastFps, frameMs)
         } else {
             DASH
@@ -101,12 +114,16 @@ class FpsCounterView(context: Context) : TextView(context) {
 
     companion object {
         private const val POLL_MS = 500L
-        private const val DASH = "— FPS"
+        private const val DASH = "…"
 
-        /** Adiciona a pill no canto superior direito do layout do SDL. */
-        fun addTo(activity: GameActivity) {
+        /**
+         * Adiciona a pill no canto superior direito do layout do SDL,
+         * respeitando o cutout (notch) quando houver. Retorna null se o
+         * content view ainda não estiver disponível.
+         */
+        fun addTo(activity: GameActivity): FpsCounterView? {
             val layout = org.libsdl.app.SDLActivity.getContentView() as? android.view.ViewGroup
-                ?: return
+                ?: return null
             val pill = FpsCounterView(activity)
             val params = FrameLayout.LayoutParams(
                 android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -114,10 +131,31 @@ class FpsCounterView(context: Context) : TextView(context) {
                 Gravity.TOP or Gravity.END
             ).apply {
                 topMargin = dpStatic(activity, 14f).toInt()
-                rightMargin = dpStatic(activity, 14f).toInt()
+                marginEnd = dpStatic(activity, 14f).toInt()
             }
             layout.addView(pill, params)
+
+            // Cutout/notch: soma os insets seguros do display às margens.
+            pill.setOnApplyWindowInsetsListener { v, insets ->
+                val cutout = insets.displayCutout
+                val top = maxOf(
+                    insets.systemWindowInsetTop,
+                    cutout?.safeInsetTop ?: 0
+                )
+                val right = maxOf(
+                    insets.systemWindowInsetRight,
+                    cutout?.safeInsetRight ?: 0
+                )
+                (v.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                    lp.topMargin = dpStatic(v.context, 14f).toInt() + top
+                    lp.rightMargin = dpStatic(v.context, 14f).toInt() + right
+                    v.layoutParams = lp
+                }
+                insets
+            }
+            pill.requestApplyInsets()
             pill.start()
+            return pill
         }
 
         private fun dpStatic(context: Context, v: Float): Float =

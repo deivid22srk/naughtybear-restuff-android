@@ -81,6 +81,7 @@ import com.deivid22srk.restuff.settings.PortSettings
 import com.deivid22srk.restuff.settings.PortSettingsViewModel
 import com.deivid22srk.restuff.ui.theme.PortPalette
 import com.deivid22srk.restuff.ui.theme.PortType
+import com.deivid22srk.restuff.ui.components.portClickable
 import com.deivid22srk.restuff.viewmodel.DataPhase
 import com.deivid22srk.restuff.viewmodel.DataSelectionUiState
 import com.deivid22srk.restuff.viewmodel.DataSelectionViewModel
@@ -142,7 +143,7 @@ fun SettingsScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 8.dp)
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = config.contentDescBack,
@@ -211,8 +212,8 @@ fun SettingsScreen(
                 onSettingsChange { it.copy(vblankHz = value.roundToInt()) }
             }
             Text(
-                text = "Frequência do vblank simulado pela thread de " +
-                    "apresentação do backend Vulkan (cvar vblank_hz).",
+                text = "Relógio de vídeo do motor — ajuste fino para painéis " +
+                    "de alta taxa de atualização.",
                 color = PortPalette.textTertiary,
                 style = PortType.rowSub
             )
@@ -270,7 +271,7 @@ fun SettingsScreen(
 
             ToggleRow(
                 label = "Desbloquear 60 FPS",
-                subtitle = "Reescreve o PresentationInterval do jogo (30 → 60)",
+                subtitle = "Força o jogo a rodar a 60 quadros por segundo",
                 checked = settings.unlock60Fps,
                 onChange = { checked ->
                     onSettingsChange { it.copy(unlock60Fps = checked) }
@@ -280,7 +281,7 @@ fun SettingsScreen(
 
             ToggleRow(
                 label = "Unlock All (cheat)",
-                subtitle = "Força todos os trajes/conteúdos desbloqueados",
+                subtitle = "Libera todos os trajes e conteúdos extras",
                 checked = settings.unlockAllCheat,
                 onChange = { checked ->
                     onSettingsChange { it.copy(unlockAllCheat = checked) }
@@ -290,7 +291,7 @@ fun SettingsScreen(
 
             ToggleRow(
                 label = "Texture Mods (packs HD)",
-                subtitle = "Substitui texturas por hash em files/texture_mods/",
+                subtitle = "Usa packs de texturas em HD da pasta texture_mods",
                 checked = settings.textureMods,
                 onChange = { checked ->
                     onSettingsChange { it.copy(textureMods = checked) }
@@ -430,27 +431,22 @@ private fun <T> ChoiceChipsRow(
             val isSelected = option == selected
             Box(
                 modifier = Modifier
-                    .heightIn(min = 44.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(PortPalette.radiusSm))
                     .background(if (isSelected) accent else Color.Transparent)
                     .border(
                         1.dp,
                         if (isSelected) Color.Transparent else PortPalette.ghostBorder,
-                        RoundedCornerShape(10.dp)
+                        RoundedCornerShape(PortPalette.radiusSm)
                     )
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { onSelect(option) }
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                    .portClickable { onSelect(option) }
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = label(option),
-                    color = if (isSelected) Color(0xFF141008) else PortPalette.textSecondary,
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.4.sp
+                    color = if (isSelected) PortPalette.onAccent else PortPalette.textSecondary,
+                    style = PortType.chip
                 )
             }
         }
@@ -491,7 +487,7 @@ private fun ToggleRow(
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
                 checkedTrackColor = accent,
-                checkedThumbColor = Color(0xFF141008),
+                checkedThumbColor = PortPalette.onAccent,
                 uncheckedTrackColor = Color(0x20FFFFFF),
                 uncheckedThumbColor = PortPalette.textSecondary
             )
@@ -577,28 +573,20 @@ private fun DangerButton(label: String, enabled: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(PortPalette.radiusSm))
             .border(
                 1.dp,
                 red.copy(alpha = if (enabled) 0.35f else 0.12f),
-                RoundedCornerShape(10.dp)
+                RoundedCornerShape(PortPalette.radiusSm)
             )
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                enabled = enabled
-            ) {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                onClick()
-            }
+            .portClickable(enabled = enabled, haptic = true) { onClick() }
             .padding(horizontal = 16.dp, vertical = 13.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
             color = red.copy(alpha = if (enabled) 1f else 0.4f),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold
+            style = PortType.caption
         )
     }
 }
@@ -730,17 +718,13 @@ private fun DriversSection() {
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(PortPalette.radiusSm))
                 .border(
                     1.dp,
                     accent.copy(alpha = if (importing) 0.2f else 0.55f),
-                    RoundedCornerShape(10.dp)
+                    RoundedCornerShape(PortPalette.radiusSm)
                 )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    enabled = !importing
-                ) { zipPicker.launch(DRIVER_ZIP_MIME) }
+                .portClickable(enabled = !importing) { zipPicker.launch(DRIVER_ZIP_MIME) }
                 .padding(horizontal = 16.dp, vertical = 13.dp),
             contentAlignment = Alignment.Center
         ) {
@@ -770,8 +754,7 @@ private fun DriversSection() {
                     Text(
                         text = "Importar driver (.zip)",
                         color = accent,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
+                        style = PortType.caption
                     )
                 }
             }
@@ -803,10 +786,7 @@ private fun DriverOptionRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onSelect() }
+            .portClickable { onSelect() }
             .padding(vertical = 8.dp)
     ) {
         // Indicador: ponto cheio no accent (selecionado) ou anel hairline.
@@ -882,7 +862,7 @@ private fun DiagnosticsSection(
 
         ToggleRow(
             label = "Log detalhado (debug)",
-            subtitle = "log_level=debug no motor + backtrace de crash persistido",
+            subtitle = "Grava eventos internos do motor no log da sessão",
             checked = detailedLogs,
             onChange = onDetailedLogsChange
         )
