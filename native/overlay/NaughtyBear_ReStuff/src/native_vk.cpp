@@ -46,6 +46,7 @@ static void restuff_cblip_beep() {}
 #include "renderer/guest_texture_decode.h"
 #include "renderer/native_backend_vk.h"
 #include "renderer/shader_pipeline.h"
+#include "renderer/texture_mods.h"
 #include "renderer/up_draws.h"
 
 // glslc-compiled SPIR-V, embedded as alignas(4) uint32_t arrays at build time
@@ -67,6 +68,7 @@ REXCVAR_DEFINE_BOOL(use_native_renderer, true, "Renderer",
                     "Render through the native Vulkan graphics system instead of the "
                     "xenos GPU emulation plugin.");
 REXCVAR_DECLARE(bool, use_translated_shaders);  // defined in native_backend_vk.cpp
+REXCVAR_DECLARE(bool, tex_dump);                // defined in renderer/texture_mods.cpp
 
 namespace restuff::native { uint64_t CurrentPsHashForDebug(); }
 namespace restuff {
@@ -90,6 +92,14 @@ struct TexEntry {
   VkImageView view = VK_NULL_HANDLE;
   VkDescriptorSet set = VK_NULL_HANDLE;  // allocate-only (no vkFreeDescriptorSets in the table)
   uint64_t content_hash = 0;
+  // Live texture-mod reload. mod_gen is the GLOBAL generation this entry was
+  // last validated against -- a cheap gate, since an entry carrying the
+  // current global generation cannot be stale. hash_gen is the per-hash
+  // generation it was actually built from; that is what decides staleness
+  // when the gate misses, so a save invalidates only the edited texture
+  // rather than re-decoding the whole corpus.
+  uint32_t mod_gen = 0;
+  uint32_t hash_gen = 0;
   uint32_t width = 0, height = 0;
   // M4.36: actual device-memory footprint of `image` (vkGetImageMemoryRequirements
   // at create time). Feeds RESTUFF_TEXCENSUS -- on a shared-memory handheld the
@@ -107,6 +117,10 @@ struct TexEntry {
   // refresh additionally requires this to match -- a BC<->RGBA flip (device
   // path change or format change at one address) must take the recreate path.
   VkFormat vkfmt = VK_FORMAT_UNDEFINED;
+  // Mip levels held by `image`. >1 only for texture replacements, which are
+  // often upscaled far past the guest size and thrash the GPU texture cache
+  // without a pyramid. Guest textures keep the single-level fast path.
+  uint32_t mip_levels = 1;
   bool is_depth = false;  // D32_SFLOAT resolve target (depth aspect), not color
   // M4.4: depth rt_tex entries are also usable as depth attachments (the
   // single-pass depth-fill resolve renders into them). Both lazily created on
@@ -128,6 +142,9 @@ struct PendingUpload {
   VkDeviceMemory staging_mem = VK_NULL_HANDLE;
   VkImage image = VK_NULL_HANDLE;
   uint32_t width = 0, height = 0;
+  // >1 means the staging buffer holds level 0 followed by every smaller
+  // level contiguously; the recorder emits one copy region per level.
+  uint32_t mip_levels = 1;
 };
 
 struct CachedFb {
@@ -180,6 +197,11 @@ struct DrawLayer {
   // Point-sampled variant for depth resolve targets (D32 depth images can't be
   // linearly filtered, and depth values must not be blended).
   VkSampler sampler_nearest = VK_NULL_HANDLE;  // borrowed, do NOT destroy
+  // OWNED (unlike the three above): the borrowed UI samplers leave
+  // minLod/maxLod at 0, which clamps sampling to level 0 -- a mip chain
+  // through them would cost memory and never be read. Created ONCE at init.
+  VkSampler sampler_mip = VK_NULL_HANDLE;
+  VkSampler sampler_mip_repeat = VK_NULL_HANDLE;
 
   // One host-visible vertex buffer, grown as needed, persistently mapped.
   VkBuffer vb = VK_NULL_HANDLE;
@@ -649,6 +671,33 @@ bool CreateDrawLayer(vk::VulkanProvider& provider) {
   dl.sampler_nearest =
       provider.ui_samplers()->samplers()[vk::UISamplers::kSamplerIndexNearestClampToEdge];
 
+  // Mip-capable samplers for texture replacements. The SDK's caution about
+  // maxSamplerAllocationCount is about per-texture/dynamic allocation; these
+  // are exactly two, created once for the device lifetime, against a limit
+  // that is >= 4000. Everything else still uses the borrowed UI samplers.
+  {
+    VkSamplerCreateInfo sci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sci.minLod = 0.0f;
+    sci.maxLod = VK_LOD_CLAMP_NONE;  // the whole point: UI samplers pin this to 0
+    if (dev->properties().samplerAnisotropy) {
+      sci.anisotropyEnable = VK_TRUE;
+      sci.maxAnisotropy = std::min(8.0f, dev->properties().maxSamplerAnisotropy);
+    }
+    sci.addressModeU = sci.addressModeV = sci.addressModeW =
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (df.vkCreateSampler(device, &sci, nullptr, &dl.sampler_mip) != VK_SUCCESS)
+      dl.sampler_mip = VK_NULL_HANDLE;
+    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (df.vkCreateSampler(device, &sci, nullptr, &dl.sampler_mip_repeat) != VK_SUCCESS)
+      dl.sampler_mip_repeat = VK_NULL_HANDLE;
+    REXLOG_INFO("[native_vk] mip samplers {} (aniso {:.0f}x)",
+                dl.sampler_mip ? "ready" : "FAILED - replacements will not mip",
+                sci.anisotropyEnable ? sci.maxAnisotropy : 1.0f);
+  }
+
   // M3.100: present-time gamma-ramp pipeline. The guest programs a display
   // gamma curve through the DC_LUT registers; the 360's display controller
   // applies it at scanout and the SDK reference bakes it into the front
@@ -954,7 +1003,8 @@ VkDescriptorSet LookupRtTex(uint32_t phys);
 // pass their tightly-packed block-stream size instead (the copy region is
 // still {w,h} texels -- Vulkan sizes compressed copies by extent).
 bool StageTexUpload(vk::VulkanDevice* dev, VkImage image, uint32_t w, uint32_t h,
-                    const uint8_t* rgba, VkDeviceSize data_bytes = 0) {
+                    const uint8_t* rgba, VkDeviceSize data_bytes = 0,
+                    uint32_t mip_levels = 1) {
   auto& dl = DL();
   const auto& df = dev->functions();
   VkDevice device = dev->device();
@@ -963,6 +1013,7 @@ bool StageTexUpload(vk::VulkanDevice* dev, VkImage image, uint32_t w, uint32_t h
   up.image = image;
   up.width = w;
   up.height = h;
+  up.mip_levels = mip_levels;
   uint32_t staging_type = 0;
   VkDeviceSize staging_size = 0;
   if (!vk::util::CreateDedicatedAllocationBuffer(dev, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -987,7 +1038,8 @@ bool StageTexUpload(vk::VulkanDevice* dev, VkImage image, uint32_t w, uint32_t h
 // path passes BC1/2/3 [_SRGB]); data_bytes rides through to StageTexUpload.
 bool CreateTexEntry(vk::VulkanDevice* dev, TexEntry& t, const uint8_t* rgba, uint32_t w,
                     uint32_t h, bool wrap = false, bool srgb = false,
-                    VkFormat explicit_fmt = VK_FORMAT_UNDEFINED, VkDeviceSize data_bytes = 0) {
+                    VkFormat explicit_fmt = VK_FORMAT_UNDEFINED, VkDeviceSize data_bytes = 0,
+                    uint32_t mip_levels = 1) {
   auto& dl = DL();
   const auto& df = dev->functions();
   VkDevice device = dev->device();
@@ -1007,7 +1059,12 @@ bool CreateTexEntry(vk::VulkanDevice* dev, TexEntry& t, const uint8_t* rgba, uin
   img_ci.imageType = VK_IMAGE_TYPE_2D;
   img_ci.format = tex_fmt;
   img_ci.extent = {w, h, 1};
-  img_ci.mipLevels = 1;
+  // A mip chain needs a sampler that can read past level 0; without one the
+  // extra levels are pure cost, so fall back to a flat image. (No
+  // TRANSFER_SRC needed: levels arrive prebuilt from the CPU, not via blit.)
+  if (mip_levels > 1 && (wrap ? dl.sampler_mip_repeat : dl.sampler_mip) == VK_NULL_HANDLE)
+    mip_levels = 1;
+  img_ci.mipLevels = mip_levels;
   img_ci.arrayLayers = 1;
   img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
   img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1038,8 +1095,9 @@ bool CreateTexEntry(vk::VulkanDevice* dev, TexEntry& t, const uint8_t* rgba, uin
     t.set = AcquireTexSet(dev);
     if (t.set == VK_NULL_HANDLE) return false;
   }
-  VkDescriptorImageInfo dii = {wrap ? dl.sampler_repeat : dl.sampler, t.view,
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const VkSampler smp = mip_levels > 1 ? (wrap ? dl.sampler_mip_repeat : dl.sampler_mip)
+                                       : (wrap ? dl.sampler_repeat : dl.sampler);
+  VkDescriptorImageInfo dii = {smp, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   VkWriteDescriptorSet wds = {};
   wds.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   wds.dstSet = t.set;
@@ -1051,10 +1109,11 @@ bool CreateTexEntry(vk::VulkanDevice* dev, TexEntry& t, const uint8_t* rgba, uin
 
   // Staging buffer, filled now; the copy is recorded at the head of this
   // frame's command buffer.
-  if (!StageTexUpload(dev, t.image, w, h, rgba, data_bytes)) return false;
+  if (!StageTexUpload(dev, t.image, w, h, rgba, data_bytes, mip_levels)) return false;
 
   t.width = w;
   t.height = h;
+  t.mip_levels = mip_levels;
   t.srgb = tex_fmt == VK_FORMAT_R8G8B8A8_SRGB || tex_fmt == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ||
            tex_fmt == VK_FORMAT_BC2_SRGB_BLOCK || tex_fmt == VK_FORMAT_BC3_SRGB_BLOCK;
   t.vkfmt = tex_fmt;  // M4.3
@@ -1202,11 +1261,22 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
     if (fresh) mit->second = renderer::GuestTextureContentHash(tex);
     hash = mit->second;
   }
+  const uint32_t mod_gen = renderer::texmod::ModGeneration();
   auto it = dl.textures.find(key);
   if (it != dl.textures.end() && it->second.content_hash == hash &&
       it->second.image != VK_NULL_HANDLE) {
-    it->second.last_used_frame = dl.frames_rendered.load(std::memory_order_relaxed);  // M4.36
-    return &it->second;
+    // One atomic load on the hot path. The per-hash table is touched only in
+    // the window after a mod-folder change, once per texture, and the entry
+    // is then re-stamped so it returns to the fast gate.
+    bool current = it->second.mod_gen == mod_gen;
+    if (!current && it->second.hash_gen == renderer::texmod::ModGenerationFor(hash)) {
+      it->second.mod_gen = mod_gen;
+      current = true;
+    }
+    if (current) {
+      it->second.last_used_frame = dl.frames_rendered.load(std::memory_order_relaxed);  // M4.36
+      return &it->second;
+    }
   }
   if (it != dl.textures.end()) {
     static std::atomic<int> s_restuff_budget{40};
@@ -1221,13 +1291,29 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
   // their byteswapped+untiled blocks straight into BC1/2/3 images -- no CPU
   // palette decode, 4-8x fewer upload bytes. RESTUFF_NO_BC=1 forces the CPU
   // decode; the DUMP_TEX diagnostics do too (they inspect decoded RGBA).
+  // Texture replacement, keyed by CONTENT hash rather than phys_addr: guest
+  // heap addresses are reused across scenes (that is what the cache above
+  // exists to notice), so an address key would apply a mod to whatever
+  // texture later lands in the same slot. Returns null unless
+  // tex_mods is enabled and a replacement is ready, and caches misses.
+  // shared_ptr: render threads read this while the loader invalidates cached
+  // data, so the entry must stay alive for as long as it is used here.
+  // Null simply means "not decoded yet" -- draw the guest texture; the
+  // loader bumps the generation and it re-resolves when ready.
+  uint32_t hash_gen = 0;
+  const auto repl = renderer::texmod::FindReplacement(hash, &hash_gen);
   static const bool s_no_bc = getenv("RESTUFF_NO_BC") != nullptr;
-  static const bool s_dump_tex_any =
+  static const bool s_env_tex_dump = getenv("RESTUFF_TEX_DUMP") != nullptr;
+  static const bool s_env_dump_tex =
       getenv("RESTUFF_DUMP_TEX") != nullptr || getenv("RESTUFF_DUMP_TEX_RAW") != nullptr;
+  const bool s_tex_dump = REXCVAR_GET(tex_dump) || s_env_tex_dump;
+  const bool s_dump_tex_any = s_env_dump_tex || s_tex_dump;
   static const bool s_no_srgb_fmt = getenv("RESTUFF_NO_SRGB") != nullptr;
   const bool is_dxt = tex.format == 18 || tex.format == 19 || tex.format == 20;
+  // ... and a replacement forces the CPU/RGBA8 path for the same reason the
+  // dump diagnostics do: both need decoded texels, not raw BC blocks.
   const bool use_bc = is_dxt && dev->properties().textureCompressionBC && !s_no_bc &&
-                      !s_dump_tex_any;
+                      !s_dump_tex_any && !repl;
   VkFormat bc_fmt = VK_FORMAT_UNDEFINED;
   if (use_bc) {
     const bool sr = tex.gamma && !s_no_srgb_fmt;
@@ -1245,9 +1331,52 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
   }
   std::vector<uint8_t> rgba;  // RGBA8 texels, or the BC block stream (M4.3)
   uint32_t w = 0, h = 0;
-  const bool decoded = use_bc ? renderer::CopyGuestBCBlocks(tex, rgba, w, h)
-                              : renderer::DecodeGuestTexture(tex, rgba, w, h);
+  // With a replacement already in hand the guest pixels are only needed for a
+  // dump, so skip the CPU decode entirely otherwise -- it was running on the
+  // frame path ~900 times a session purely to be thrown away.
+  const bool need_guest = !repl || s_dump_tex_any;
+  const bool decoded = !need_guest
+                           ? true
+                           : (use_bc ? renderer::CopyGuestBCBlocks(tex, rgba, w, h)
+                                     : renderer::DecodeGuestTexture(tex, rgba, w, h));
 
+  // RESTUFF_TEX_DUMP=1: one TGA per distinct CONTENT hash. The older
+  // RESTUFF_DUMP_TEX above is keyed by address and fires once per address,
+  // so it silently skips every texture that reuses a slot -- this does not.
+  if (s_tex_dump && w && h && !rgba.empty()) {
+    static std::set<uint64_t> s_tga_dumped;
+    // The in-process set stops repeat work within a run; DumpExists stops the
+    // whole corpus being rewritten on every launch. Set membership is checked
+    // first so the filesystem is touched at most once per texture per run.
+    if (s_tga_dumped.insert(hash).second && !renderer::texmod::DumpExists(hash)) {
+      const auto name = renderer::texmod::HashName(hash);
+      // Extension follows the tex_dump_format cvar (tga or png).
+      renderer::texmod::WriteDump(hash, rgba.data(), w, h);
+      static std::atomic<int> s_dump_budget{20};
+      if (s_dump_budget.fetch_sub(1, std::memory_order_relaxed) > 0)
+        REXLOG_INFO("[texmod] dumped {} ({}x{} fmt={} addr=0x{:08X})", name, w, h, tex.format,
+                    tex.phys_addr);
+    }
+  }
+  // Swap in the replacement AFTER dumping (so a dump run still captures the
+  // ORIGINAL art) but BEFORE the in-place refresh below -- that path uploads
+  // `rgba` and returns early, so with the swap after it a modded texture that
+  // took the fast path re-uploaded the guest pixels and the replacement never
+  // reached the screen. Guest UVs are normalised, so a different (e.g.
+  // upscaled) size needs nothing else changed.
+  // Upload source. For a replacement this POINTS AT the pyramid the loader
+  // thread already built -- no rebuild and no copy on the frame path. `repl`
+  // is a shared_ptr held for this whole function, so the data stays alive.
+  const uint8_t* up_data = rgba.data();
+  VkDeviceSize up_bytes = use_bc ? VkDeviceSize(rgba.size()) : 0;
+  uint32_t mip_levels = 1;
+  if (repl) {
+    w = repl->w;
+    h = repl->h;
+    up_data = repl->rgba.data();
+    up_bytes = VkDeviceSize(repl->rgba.size());
+    mip_levels = repl->mip_levels;
+  }
   if (it != dl.textures.end()) {
     // M4.0: content changed but the shape didn't -- refresh the EXISTING image
     // in place instead of destroy+recreate. The upload records at the head of
@@ -1268,10 +1397,26 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
     const VkFormat want_fmt =
         use_bc ? bc_fmt : (want_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
     if (!s_no_inplace && decoded && e.image != VK_NULL_HANDLE && e.width == w &&
-        e.height == h && e.vkfmt == want_fmt &&
-        StageTexUpload(dev, e.image, w, h, rgba.data(),
-                       use_bc ? VkDeviceSize(rgba.size()) : 0)) {
+        e.height == h && e.vkfmt == want_fmt && e.mip_levels == mip_levels &&
+        StageTexUpload(dev, e.image, w, h, up_data, up_bytes, mip_levels)) {
       e.content_hash = hash;
+      // An in-place refresh must re-stamp the texture-mod generations too.
+      // Without this the entry stays permanently stale: the cache check fails
+      // every frame, re-decodes, refreshes in place, and fails again -- a
+      // per-frame re-decode loop. It only showed up when the VkFormat did NOT
+      // change across the toggle (e.g. tex_dump on, which disables BC upload,
+      // so both states are RGBA8 and this fast path is always eligible).
+      e.mod_gen = mod_gen;
+      e.hash_gen = hash_gen;
+      // Proof the fast path carries MODDED pixels: before the swap was moved
+      // above this block, an in-place refresh re-uploaded the guest texture
+      // and the replacement never reached the screen.
+      if (repl) {
+        static std::atomic<int> s_ip_repl_budget{8};
+        if (s_ip_repl_budget.fetch_sub(1, std::memory_order_relaxed) > 0)
+          REXLOG_INFO("[texmod] in-place refresh uploaded REPLACEMENT {} ({}x{})",
+                      renderer::texmod::HashName(hash), w, h);
+      }
       // M4.37: an in-place refresh IS a use -- without this the entry looks
       // permanently cold to the LRU sweep and gets evicted while hot.
       e.last_used_frame = dl.frames_rendered.load(std::memory_order_relaxed);
@@ -1331,13 +1476,14 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
     }
   }
   TexEntry t;
-  if (!CreateTexEntry(dev, t, rgba.data(), w, h, wrap, tex.gamma,
-                      use_bc ? bc_fmt : VK_FORMAT_UNDEFINED,
-                      use_bc ? VkDeviceSize(rgba.size()) : 0)) {
+  if (!CreateTexEntry(dev, t, up_data, w, h, wrap, tex.gamma,
+                      use_bc ? bc_fmt : VK_FORMAT_UNDEFINED, up_bytes, mip_levels)) {
     DestroyTexEntry(dev, t);
     return nullptr;
   }
   t.content_hash = hash;
+  t.mod_gen = mod_gen;
+  t.hash_gen = hash_gen;
   static std::atomic<int> s_srgb_cnt{0}, s_lin_cnt{0};
   const int g_after = tex.gamma ? s_srgb_cnt.fetch_add(1, std::memory_order_relaxed) + 1
                                 : (s_lin_cnt.fetch_add(1, std::memory_order_relaxed), -1);
@@ -10492,11 +10638,27 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           df.vkCmdPipelineBarrier(cmd_buf_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                                   &b);
-          VkBufferImageCopy region = {};
-          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-          region.imageExtent = {up.width, up.height, 1};
+          // One region per mip level; the staging buffer holds level 0 then each
+          // smaller level contiguously (BuildMipChain). With mip_levels == 1 this
+          // is exactly the previous single-region copy. The pyramid is built on
+          // the CPU because vkCmdBlitImage is absent from the SDK function table.
+          std::vector<VkBufferImageCopy> regions;
+          regions.reserve(up.mip_levels);
+          VkDeviceSize level_off = 0;
+          uint32_t lw = up.width, lh = up.height;
+          for (uint32_t lvl = 0; lvl < up.mip_levels; ++lvl) {
+            VkBufferImageCopy region = {};
+            region.bufferOffset = level_off;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lvl, 0, 1};
+            region.imageExtent = {lw, lh, 1};
+            regions.push_back(region);
+            level_off += VkDeviceSize(lw) * lh * 4;
+            lw = lw > 1 ? lw / 2 : 1;
+            lh = lh > 1 ? lh / 2 : 1;
+          }
           df.vkCmdCopyBufferToImage(cmd_buf_, up.staging, up.image,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    uint32_t(regions.size()), regions.data());
           b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
           b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
           b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -10725,6 +10887,8 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           frame_slot_ ^= 1;
         }
 
+        // Publish live texture-mod toggles; the loader scans the directory.
+        renderer::texmod::PollModDir();
         const uint64_t fr = dl.frames_rendered.fetch_add(1, std::memory_order_relaxed) + 1;
         // RESTUFF_RDOC_TRIGGER=<path>: when the file is non-empty, fire a
         // RenderDoc capture of the next presented frame and truncate the file

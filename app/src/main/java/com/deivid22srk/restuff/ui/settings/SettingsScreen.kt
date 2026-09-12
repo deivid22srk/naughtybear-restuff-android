@@ -303,6 +303,16 @@ fun SettingsScreen(
                     ) { checked ->
                         onSettingsChange { it.copy(unlockAllCheat = checked) }
                     }
+
+                    Spacer(Modifier.height(12.dp))
+                    ToggleRow(
+                        label = "Texture Mods (packs HD)",
+                        subtitle = "Substitui texturas por hash em files/texture_mods/ (padrão do port PC; dump via tex_dump)",
+                        checked = settings.textureMods,
+                        accent = accent
+                    ) { checked ->
+                        onSettingsChange { it.copy(textureMods = checked) }
+                    }
                 }
 
                 Spacer(Modifier.height(14.dp))

@@ -44,6 +44,10 @@ data class PortSettings(
     // Motor ReStuff
     val unlockAllCheat: Boolean = false,        // unlock_all (cheats)
     val unlock60Fps: Boolean = true,            // RESTUFF_FPS60 (unlock vblank)
+    // Texture mods do upstream PC (6b269c1): substituição de texturas por
+    // content hash em <files>/texture_mods/<hash>.png (dump: tex_dump).
+    // Sem root o usuário não edita restuff.toml — o toggle é a via oficial.
+    val textureMods: Boolean = false,           // tex_mods (texture packs HD)
     // Controles (overlay do gamepad virtual)
     val showOverlayControls: Boolean = true,
     val overlayOpacity: Float = 0.65f,          // 0.2 .. 1.0
@@ -75,6 +79,7 @@ class PortSettingsRepository(context: Context) {
             vblankHz = prefs.getInt(K_VBLANK, 120).coerceIn(30, 240),
             unlockAllCheat = prefs.getBoolean(K_UNLOCK_ALL, false),
             unlock60Fps = prefs.getBoolean(K_UNLOCK_60FPS, true),
+            textureMods = prefs.getBoolean(K_TEX_MODS, false),
             showOverlayControls = prefs.getBoolean(K_OVERLAY, true),
             overlayOpacity = prefs.getFloat(K_OPACITY, 0.65f).coerceIn(0.2f, 1f),
             overlayScale = prefs.getFloat(K_PADSCALE, 1f).coerceIn(0.7f, 1.6f),
@@ -91,6 +96,7 @@ class PortSettingsRepository(context: Context) {
             .putInt(K_VBLANK, s.vblankHz)
             .putBoolean(K_UNLOCK_ALL, s.unlockAllCheat)
             .putBoolean(K_UNLOCK_60FPS, s.unlock60Fps)
+            .putBoolean(K_TEX_MODS, s.textureMods)
             .putBoolean(K_OVERLAY, s.showOverlayControls)
             .putFloat(K_OPACITY, s.overlayOpacity)
             .putFloat(K_PADSCALE, s.overlayScale)
@@ -109,6 +115,7 @@ class PortSettingsRepository(context: Context) {
         const val K_VBLANK = "restuff_vblank_hz"
         const val K_UNLOCK_ALL = "restuff_unlock_all"
         const val K_UNLOCK_60FPS = "restuff_unlock_60fps"
+        const val K_TEX_MODS = "restuff_tex_mods"
         const val K_OVERLAY = "overlay_controls"
         const val K_OPACITY = "overlay_opacity"
         const val K_PADSCALE = "overlay_pad_scale"

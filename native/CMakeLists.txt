@@ -59,6 +59,9 @@ set(RESTUFF_SOURCES
     "${RESTUFF_SOURCE_DIR}/src/renderer/guest_texture_decode.cpp"
     "${RESTUFF_SOURCE_DIR}/src/renderer/ucode_translator.cpp"
     "${RESTUFF_SOURCE_DIR}/src/renderer/shader_pipeline.cpp"
+    # Port do upstream PC 6b269c1: texture mods — dump TGA + substituição
+    # por content hash (decoder stb no Android, ver overlay texture_mods.cpp)
+    "${RESTUFF_SOURCE_DIR}/src/renderer/texture_mods.cpp"
 )
 
 # ----------------------------------------------------------------------
@@ -121,6 +124,10 @@ target_include_directories(restuff PRIVATE
     "${REXSDK_SOURCE_DIR}/thirdparty/imgui"
     # renderdoc_app.h (native_vk.cpp no branch não-WIN32)
     "${REXSDK_SOURCE_DIR}/include/renderdoc"
+    # stb_image.h — decoder dos texture mods no branch não-WIN32 do
+    # texture_mods.cpp (a cópia canônica do SDK; a do SDL3 é static, sem
+    # conflito de símbolos)
+    "${REXSDK_SOURCE_DIR}/thirdparty/stb"
 )
 
 # Opções de compilação do código recompilado — mesmo conjunto do

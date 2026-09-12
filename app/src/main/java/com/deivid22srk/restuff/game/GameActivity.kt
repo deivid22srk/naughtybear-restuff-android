@@ -108,6 +108,10 @@ class GameActivity : SDLActivity() {
                 appendLine("vblank_hz = ${settings.vblankHz}")
                 appendLine("use_translated_shaders = true")
                 appendLine("unlock_all = ${settings.unlockAllCheat}")
+                // Texture mods (upstream PC 6b269c1): packs em
+                // <files>/texture_mods/<hash>.png — decoder stb no Android.
+                // Toggle é a via oficial (sem root não se edita este arquivo).
+                appendLine("tex_mods = ${settings.textureMods}")
                 // GPUs móveis não expõem geometryShader (nem Turnip nem
                 // Adreno/Mali) — exigir rejeita TODOS os devices → tela
                 // preta. O default nativo também foi corrigido; isto é o
