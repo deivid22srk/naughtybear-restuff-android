@@ -2283,8 +2283,10 @@ bool PipelinedMode() {
     static const char* const kBlockers[] = {
         "RESTUFF_RESOLVE_WB",     "RESTUFF_DUMP_SCENE",  "RESTUFF_DUMP_EACH_AUX",
         "RESTUFF_DUMP_AFTER_AUX", "RESTUFF_MID_DEPTH",   "RESTUFF_RDOC_TRIGGER",
-        "RESTUFF_NO_VBCACHE",     "RESTUFF_DUMPGO",      "RESTUFF_GPUPASS_MS",
+        "RESTUFF_NO_VBCACHE",     "RESTUFF_DUMPGO",
     };
+    // M4.33b (perf/sd695-30fps v2): RESTUFF_GPUPASS_MS is no longer a blocker
+    // -- GPUPASS is always-on and per-slot-pool pipelined-safe now.
     for (const char* b : kBlockers) {
       if (getenv(b)) {
         REXLOG_INFO("[native_vk] M4.5 pipelined present OFF: {} needs the serialized frame", b);
@@ -6256,7 +6258,11 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
   // entry to the record section is 26-34ms -- and unlike queue_acquire, none of
   // it touches the queue mutex, so it is not the Xvfb artifact. Time the five
   // top-level stages so the expensive one is named rather than guessed at.
-  static const bool s_pp = getenv("RESTUFF_PREPMS") != nullptr;
+  // M3.135c + perf/sd695-30fps v2: PREPMS is ALWAYS ON (RESTUFF_NO_PREPMS=1
+  // disables) -- the field log3 showed prep=15-59ms/frame (35ms avg) with no
+  // split available because the env gate was off; ~5 steady_clock reads per
+  // frame are negligible and the split decides the next CPU-side strike.
+  static const bool s_pp = getenv("RESTUFF_NO_PREPMS") == nullptr;
   auto _pp_now = [] { return std::chrono::steady_clock::now(); };
   const auto _pp_a = _pp_now();
   auto _pp_b = _pp_a, _pp_c = _pp_a, _pp_d = _pp_a, _pp_e = _pp_a;
@@ -9399,9 +9405,11 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
   g_vshit_probe_frame = false;  // M3.154c: one submit pass per armed probe frame
   // M4.2: report threshold env-tunable -- 150k draws (~100 frames) is too
   // coarse for short A/B runs; RESTUFF_PREPLOOP_N=15000 gets a line in ~10s.
+  // perf/sd695-30fps v2: default now always-on+30-frame-ish (18k draws ~
+  // 569-draw frames) so the per-draw cost split lands in every field log.
   static const uint64_t s_preploop_n = [] {
     const char* v = getenv("RESTUFF_PREPLOOP_N");
-    return v ? std::strtoull(v, nullptr, 10) : 150000ull;
+    return v ? std::strtoull(v, nullptr, 10) : 18000ull;
   }();
   if (s_pp && pl_n >= s_preploop_n) {
     REXLOG_INFO("[PREPLOOP] per-draw avg over {} draws: filter_and_consts={}ns pipeline={}ns "
@@ -9588,10 +9596,12 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
     ring += us(_pp_d, _pp_e);
     mainl += us(_pp_e, f);
     ndraws += tl.frame.size();
-    if (++n % 100 == 0) {
-      REXLOG_INFO("[PREPMS] 100-frame avg PrepareTranslatedDraws: consume={}us probes={}us "
+    // perf/sd695-30fps v2: 30-frame cadence (FRAMEMS-matched) -- at ~8fps a
+    // 100-frame average needs 12s of gameplay to print once.
+    if (++n % 30 == 0) {
+      REXLOG_INFO("[PREPMS] 30-frame avg PrepareTranslatedDraws: consume={}us probes={}us "
                   "untranspose={}us sizing_ring={}us main_loop={}us | draws/frame={}",
-                  consume / 100, probes / 100, untr / 100, ring / 100, mainl / 100, ndraws / 100);
+                  consume / 30, probes / 30, untr / 30, ring / 30, mainl / 30, ndraws / 30);
       consume = probes = untr = ring = mainl = ndraws = 0;
     }
   }
@@ -9767,24 +9777,29 @@ void RecordTranslatedDraws(vk::VulkanDevice* dev, VkCommandBuffer cmd,
 // draw segments between resolve records render inside scene render passes
 // (first segment clears, later ones load); each resolve blits the scene into
 // its destination texture. Runs OUTSIDE the presented render pass.
-// M4.33 (RESTUFF_GPUPASS_MS=1): GPU-side per-pass frame cost breakdown via
-// timestamp queries. The CPU-side diags (PRESENTMS*) can say the GPU owns the
-// frame (gpu_fence_wait) but not WHERE inside it; this writes a GPU timestamp
-// at every region boundary of the frame command buffer and attributes each
-// delta to the region that just ended: main-scene draw segments, aux
-// (shadow/bloom mask) segments, resolves (the EDRAM-model RT copies), the
-// tone pass, the present/gamma pass, and the frame-head upload/barrier
-// prologue. Logs a [GPUPASS] 100-frame average, same cadence as PRESENTMS.
-// Needs the serialized frame (registered as a PipelinedMode blocker): results
-// are read after the frame fence, so the readback never stalls the GPU.
+// M4.33b (perf/sd695-30fps v2): GPU per-pass timing is now ALWAYS ON and
+// PIPELINED-COMPATIBLE. Field evidence (log3, moto g34/SD695): the heavy-gameplay
+// present cycle is 117.6ms (prep 35 + rec 5 + sdk 76) while the pipelined
+// frame-head fence wait reads ~0.1ms -- because the fence is checked TWO cycles
+// after submit, that wait only bounds GPU latency at <2*cyc; the real GPU
+// execution time is UNKNOWN and divides the fix strategy (GPU-side resolve/
+// pass restructuring vs CPU-side prep/submit work). This closes the blind spot:
+// each frame slot owns a query pool; stamps are written during record; the
+// pool is read at the NEXT use of that slot's frame head, right after its
+// fence wait -- results are provably complete, so vkGetQueryPoolResults never
+// stalls the GPU and PipelinedMode no longer needs to be blocked. Cost: one
+// vkCmdWriteTimestamp per region boundary (~30-60/frame, sub-ms on Adreno).
+// RESTUFF_NO_GPUPASS=1 restores the legacy off state. Logs a [GPUPASS]
+// 30-frame average (FRAMEMS cadence, readable in a ~5s gameplay window).
 namespace {
 enum GpCat : uint8_t { kGpUpload, kGpMain, kGpAux, kGpResolve, kGpTone, kGpPresent, kGpNumCats };
 struct GpuPassDiag {
   static constexpr uint32_t kMaxStamps = 256;
-  VkQueryPool pool = VK_NULL_HANDLE;
+  static constexpr uint32_t kSlots = 4;  // >= cmd_bufs_ frame slots in flight
+  VkQueryPool pool[kSlots] = {};
   bool broken = false;         // pool creation failed -- stay off for good
-  uint8_t cat[kMaxStamps] = {};
-  uint32_t n = 0;              // stamps recorded this frame (0 = not begun)
+  uint8_t cat[kSlots][kMaxStamps] = {};
+  uint32_t n[kSlots] = {};     // stamps recorded for that slot's live frame (0 = not begun)
   uint32_t dropped = 0;
   double period_ns = 0.0;
   uint64_t acc_us[kGpNumCats] = {};
@@ -9792,71 +9807,78 @@ struct GpuPassDiag {
 };
 GpuPassDiag g_gp;
 bool GpOn() {
-  static const bool on = getenv("RESTUFF_GPUPASS_MS") != nullptr;
+  static const bool on = getenv("RESTUFF_NO_GPUPASS") == nullptr;
   return on;
 }
 void GpFrameBegin(vk::VulkanDevice* dev, VkCommandBuffer cmd) {
   if (!GpOn() || g_gp.broken) return;
+  const uint32_t slot = TL().slot_ix & (GpuPassDiag::kSlots - 1);
   const auto& df = dev->functions();
-  if (g_gp.pool == VK_NULL_HANDLE) {
+  if (g_gp.pool[slot] == VK_NULL_HANDLE) {
     VkPhysicalDeviceProperties pp = {};
     dev->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(dev->physical_device(),
                                                                       &pp);
-    g_gp.period_ns = pp.limits.timestampPeriod;
+    if (g_gp.period_ns <= 0.0) g_gp.period_ns = pp.limits.timestampPeriod;
     VkQueryPoolCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = GpuPassDiag::kMaxStamps;
     if (g_gp.period_ns <= 0.0 ||
-        df.vkCreateQueryPool(dev->device(), &ci, nullptr, &g_gp.pool) != VK_SUCCESS) {
+        df.vkCreateQueryPool(dev->device(), &ci, nullptr, &g_gp.pool[slot]) != VK_SUCCESS) {
       REXLOG_ERROR("[GPUPASS] timestamp queries unavailable (period={}ns) -- diag disabled",
                    g_gp.period_ns);
-      g_gp.pool = VK_NULL_HANDLE;
+      g_gp.pool[slot] = VK_NULL_HANDLE;
       g_gp.broken = true;
       return;
     }
-    REXLOG_INFO("[GPUPASS] GPU per-pass timing on ({}ns/tick)", g_gp.period_ns);
+    REXLOG_INFO("[GPUPASS] GPU per-pass timing on ({}ns/tick, per-slot pools)",
+                g_gp.period_ns);
   }
-  df.vkCmdResetQueryPool(cmd, g_gp.pool, 0, GpuPassDiag::kMaxStamps);
-  df.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gp.pool, 0);
-  g_gp.n = 1;  // stamp 0 is the frame base
+  df.vkCmdResetQueryPool(cmd, g_gp.pool[slot], 0, GpuPassDiag::kMaxStamps);
+  df.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gp.pool[slot], 0);
+  g_gp.n[slot] = 1;  // stamp 0 is the frame base
 }
 void GpMark(vk::VulkanDevice* dev, VkCommandBuffer cmd, GpCat c) {
-  if (g_gp.n == 0) return;  // diag off or frame not begun
-  if (g_gp.n >= GpuPassDiag::kMaxStamps) {
+  if (!GpOn() || g_gp.broken) return;
+  const uint32_t slot = TL().slot_ix & (GpuPassDiag::kSlots - 1);
+  if (g_gp.n[slot] == 0) return;  // diag off or frame not begun
+  if (g_gp.n[slot] >= GpuPassDiag::kMaxStamps) {
     ++g_gp.dropped;
     return;
   }
-  dev->functions().vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gp.pool,
-                                       g_gp.n);
-  g_gp.cat[g_gp.n] = uint8_t(c);
-  ++g_gp.n;
+  dev->functions().vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                       g_gp.pool[slot], g_gp.n[slot]);
+  g_gp.cat[slot][g_gp.n[slot]] = uint8_t(c);
+  ++g_gp.n[slot];
 }
-void GpCollect(vk::VulkanDevice* dev) {
-  const uint32_t n = g_gp.n;
-  g_gp.n = 0;
+// M4.33b: collect one slot's PREVIOUS frame. Call only after that slot's fence
+// is waited on (pipelined frame head / serialized trailing wait): the results
+// are already available, so WAIT_BIT cannot stall.
+void GpCollectSlot(vk::VulkanDevice* dev, uint32_t slot) {
+  if (!GpOn() || g_gp.broken) return;
+  if (slot >= GpuPassDiag::kSlots) return;
+  const uint32_t n = g_gp.n[slot];
+  g_gp.n[slot] = 0;
   if (n < 2) return;
   uint64_t ts[GpuPassDiag::kMaxStamps];
-  // The frame fence has been waited on, so results are already available;
-  // WAIT_BIT is a formality and cannot stall.
-  if (dev->functions().vkGetQueryPoolResults(dev->device(), g_gp.pool, 0, n, sizeof(ts), ts,
-                                             sizeof(uint64_t),
-                                             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) !=
-      VK_SUCCESS)
+  if (dev->functions().vkGetQueryPoolResults(dev->device(), g_gp.pool[slot], 0, n, sizeof(ts),
+                                             ts, sizeof(uint64_t),
+                                             VK_QUERY_RESULT_64_BIT |
+                                                 VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS)
     return;
   for (uint32_t k = 1; k < n; ++k) {
     const uint64_t dt = ts[k] >= ts[k - 1] ? ts[k] - ts[k - 1] : 0;
-    g_gp.acc_us[g_gp.cat[k]] += uint64_t(double(dt) * g_gp.period_ns / 1000.0);
+    g_gp.acc_us[g_gp.cat[slot][k]] += uint64_t(double(dt) * g_gp.period_ns / 1000.0);
   }
-  if (++g_gp.frames % 100 == 0) {
-    REXLOG_INFO("[GPUPASS] 100-frame avg GPU: main={}us aux={}us resolve={}us tone={}us "
+  if (++g_gp.frames % 30 == 0) {
+    REXLOG_INFO("[GPUPASS] 30-frame avg GPU: main={}us aux={}us resolve={}us tone={}us "
                 "present={}us upload={}us total={}us{}",
-                g_gp.acc_us[kGpMain] / 100, g_gp.acc_us[kGpAux] / 100,
-                g_gp.acc_us[kGpResolve] / 100, g_gp.acc_us[kGpTone] / 100,
-                g_gp.acc_us[kGpPresent] / 100, g_gp.acc_us[kGpUpload] / 100,
+                g_gp.acc_us[kGpMain] / 30, g_gp.acc_us[kGpAux] / 30,
+                g_gp.acc_us[kGpResolve] / 30, g_gp.acc_us[kGpTone] / 30,
+                g_gp.acc_us[kGpPresent] / 30, g_gp.acc_us[kGpUpload] / 30,
                 (g_gp.acc_us[kGpMain] + g_gp.acc_us[kGpAux] + g_gp.acc_us[kGpResolve] +
                  g_gp.acc_us[kGpTone] + g_gp.acc_us[kGpPresent] + g_gp.acc_us[kGpUpload]) /
-                    100,
+                    30,
                 g_gp.dropped ? " (stamp budget exceeded; tail lumped)" : "");
     for (auto& a : g_gp.acc_us) a = 0;
     g_gp.dropped = 0;
@@ -10670,6 +10692,10 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           }
           slot_submitted_[frame_slot_] = false;
           RetireFrameSlot(dev, TL().slots[frame_slot_]);
+          // M4.33b: this slot's PREVIOUS frame is now provably complete (its
+          // fence just passed) -- collect its GPU pass times here; the read
+          // cannot stall the GPU.
+          GpCollectSlot(dev, frame_slot_ & 3);
         }
 
         // Resolve textures + build the frame's draws (may queue staging uploads
@@ -11027,9 +11053,8 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
                   std::chrono::steady_clock::now() - fm_wb0)
                   .count());
         }
-        // M4.33: read the frame's pass timestamps (fence already waited --
-        // GPUPASS blocks pipelined mode, so the frame is provably complete).
-        GpCollect(dev);
+        // GPU done (serialized): collect this slot's GPU pass times.
+        GpCollectSlot(dev, TL().slot_ix & 3);
         if (s_pms2) {
           const auto now = std::chrono::steady_clock::now();
           auto us = [](auto a, auto b) {
@@ -11215,7 +11240,11 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
             REXLOG_INFO(
                 "[FRAMEMS] fps={:.1f} cyc={:.1f}ms wait={:.1f} fence={:.1f} prep={:.1f} "
                 "rec={:.1f} wb={:.1f} sdk={:.1f} gpuq={:.1f} | draws/present={:.0f}",
-                1000.0 / (g_fm_cyc_us / n), g_fm_cyc_us / n / 1000.0,
+                // perf/sd695-30fps v2: fps was 1000.0/(cyc_us/n) -- dividing by
+                // MICROseconds as if milliseconds, so every field log printed
+                // fps=0.0-0.1 regardless of the real rate (log3: cyc=117.6ms
+                // should read fps=8.5). 1e6/us == fps.
+                1e6 / (g_fm_cyc_us / n), g_fm_cyc_us / n / 1000.0,
                 g_fm_wait_us / n / 1000.0, g_fm_fence_us / n / 1000.0,
                 g_fm_prep_us / n / 1000.0, g_fm_rec_us / n / 1000.0,
                 g_fm_wb_us / n / 1000.0, g_fm_sdk_us / n / 1000.0,

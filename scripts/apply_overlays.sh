@@ -65,6 +65,9 @@ for rel in \
     include/rex/ui/vulkan/device.h \
     include/rex/ui/vulkan/functions/device_1_0.inc \
     src/ui/vulkan/vulkan_device.cpp \
+    src/ui/vulkan/vulkan_presenter.cpp \
+    src/audio/xma_decoder.cpp \
+    src/system/xthread.cpp \
     src/system/runtime.cpp \
     src/ui/rex_app.cpp \
     src/filesystem/devices/disc_image_device.cpp
