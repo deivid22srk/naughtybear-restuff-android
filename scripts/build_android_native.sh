@@ -167,14 +167,24 @@ cmake --build "$BUILD_OUT" --parallel "$(nproc)"
 # APK a versão stripada. llvm-strip --strip-debug remove SÓ .debug_*;
 # .dynsym (símbolos JNI), .eh_frame (unwind do crash handler) e todo o
 # código/rodata ficam intactos — sem efeito em runtime.
-LLVM_STRIP=$(find "$NDK_DIR/toolchains/llvm/prebuilt" -name llvm-strip \
-    -type f 2>/dev/null | head -1)
+# NOTA: no NDK r27 os binários de toolchain são SYMLINKS — o find NÃO pode
+# filtrar por -type f (primeira iteração perdeu o llvm-strip por isso);
+# fallbacks: llvm-strip/llvm-strip-19 do PATH (o CI instala LLVM 19 via
+# llvm.sh; strip de ELF é independente do target arch).
+LLVM_STRIP=$(find "$NDK_DIR/toolchains/llvm/prebuilt" -name llvm-strip 2>/dev/null | head -1)
+if [[ -z "$LLVM_STRIP" ]]; then
+    for cand in llvm-strip llvm-strip-19; do
+        if command -v "$cand" >/dev/null 2>&1; then LLVM_STRIP="$cand"; break; fi
+    done
+fi
 if [[ -n "$LLVM_STRIP" ]]; then
     cp "$BUILD_OUT/librestuff.so" "$BUILD_OUT/librestuff.so.unstripped"
     "$LLVM_STRIP" --strip-debug "$BUILD_OUT/librestuff.so"
-    echo "  librestuff: line tables preservadas em librestuff.so.unstripped; APK recebe a lib stripada"
+    echo "  librestuff stripada ($("$LLVM_STRIP" --version | head -1)):"
+    stat -c '    APK recebe: %s bytes' "$BUILD_OUT/librestuff.so"
+    stat -c '    símbolos (unstripped): %s bytes' "$BUILD_OUT/librestuff.so.unstripped"
 else
-    echo "AVISO: llvm-strip não encontrado no NDK — APK incluirá as line tables (+~85MB)" >&2
+    echo "AVISO: llvm-strip não encontrado (NDK nem PATH) — APK incluirá as line tables (+~85MB)" >&2
 fi
 
 # --- [3] Empacotar jniLibs -------------------------------------------------
