@@ -46,7 +46,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -143,7 +142,12 @@ fun SettingsScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 8.dp)
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(48.dp)
+                    .portClickable(haptic = true) { onBack() }
+            ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = config.contentDescBack,
@@ -159,7 +163,7 @@ fun SettingsScreen(
                     style = PortType.titleScreen
                 )
                 Text(
-                    text = config.labelSettingsSubtitle,
+                    text = "Ajustes do port para o seu aparelho",
                     color = PortPalette.textTertiary,
                     style = PortType.rowSub
                 )
@@ -658,11 +662,10 @@ private fun DriversSection() {
         SectionHeader("Drivers gráficos (Turnip)")
 
         Text(
-            text = "Driver Vulkan no padrão AdrenoTools (.zip com meta.json). " +
-                "O driver selecionado é carregado via AdrenoTools (hooks de " +
-                "namespace linker) no próximo início do jogo. Em caso de falha " +
-                "o motor volta para o driver do sistema e o motivo fica no log " +
-                "e no Diagnóstico abaixo.",
+            text = "Importe um driver Vulkan (.zip) para melhorar a " +
+                "compatibilidade e o desempenho em GPUs Adreno. O driver é " +
+                "usado no próximo início do jogo; se falhar, o motor volta ao " +
+                "driver do sistema e o motivo aparece no Diagnóstico.",
             color = PortPalette.textSecondary,
             style = PortType.rowSub
         )
@@ -828,7 +831,12 @@ private fun DriverOptionRow(
             }
         }
         onDelete?.let { del ->
-            IconButton(onClick = del, modifier = Modifier.size(40.dp)) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(48.dp)
+                    .portClickable { del() }
+            ) {
                 Icon(
                     imageVector = Icons.Filled.DeleteOutline,
                     contentDescription = "Remover driver",
@@ -880,7 +888,7 @@ private fun DiagnosticsSection(
                 else -> "Log: " + logLocation.removePrefix("publico:")
             },
             color = PortPalette.textTertiary,
-            style = PortType.mono
+            style = PortType.mono.copy(fontWeight = FontWeight.SemiBold)
         )
 
         Spacer(Modifier.height(8.dp))
@@ -907,20 +915,20 @@ private fun DiagnosticsSection(
             Text(
                 text = label,
                 color = labelColor,
-                style = PortType.mono
+                style = PortType.mono.copy(fontWeight = FontWeight.SemiBold)
             )
             if (outcome.status == "custom_failed" && outcome.error != "-") {
                 Text(
                     text = "  motivo: " + outcome.error.take(120),
                     color = PortPalette.textTertiary,
-                    style = PortType.mono.copy(fontSize = 10.sp)
+                    style = PortType.mono.copy(fontSize = 10.5.sp)
                 )
             }
         } else {
             Text(
                 text = "Driver: rode o jogo uma vez para ver o desfecho do boot.",
                 color = PortPalette.textTertiary,
-                style = PortType.mono
+                style = PortType.mono.copy(fontWeight = FontWeight.SemiBold)
             )
         }
 
@@ -930,8 +938,8 @@ private fun DiagnosticsSection(
             text = "Crashes nativos gravam backtrace no log da sessão e em " +
                 "files/last_crash.txt (visível só via adb/backup).",
             color = PortPalette.textTertiary,
-            fontSize = 10.sp,
-            lineHeight = 13.sp
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp
         )
     }
 }

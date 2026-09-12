@@ -49,11 +49,12 @@ fun AnimatedTitle(compact: Boolean, reduceMotion: Boolean, tailAccent: Boolean =
             translationY = (1f - entrance.value) * 18f
         }
     ) {
-        // ---- Eyebrow: accent no empty state, terciário quando o CTA é
-        // sólido (o âmbar cheio pertence ao botão) ----------------------
+        // ---- Eyebrow SEMPRE terciário: é contexto, não peso. O âmbar fica
+        // reservado ao tail (empty state) ou ao CTA (dados prontos) — a
+        // regra do alvo único vale inclusive no estado com banner. ------
         Text(
             text = config.portSubtitle.uppercase(),
-            color = if (tailAccent) config.accent.copy(alpha = 0.85f) else PortPalette.textTertiary,
+            color = PortPalette.textTertiary,
             style = PortType.label,
             textAlign = TextAlign.Center
         )

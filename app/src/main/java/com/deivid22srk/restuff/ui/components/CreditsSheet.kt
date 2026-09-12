@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -162,16 +161,15 @@ fun CreditsDialog(onDismiss: () -> Unit) {
                     lineHeight = 14.sp
                 )
 
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.align(Alignment.End)
-                ) {
-                    Text(
-                        text = config.labelClose,
-                        color = config.accent,
-                        style = PortType.rowLabel
-                    )
-                }
+                Text(
+                    text = config.labelClose,
+                    color = config.accent,
+                    style = PortType.rowLabel,
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .portClickable(haptic = true) { onDismiss() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
             }
         }
     }

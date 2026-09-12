@@ -36,7 +36,7 @@ import com.deivid22srk.restuff.config.PortBranding
  * Fundo: a arte cinematográfica do port (bg_cinematic.jpg) permanece como
  * identidade, porém FORTEMENTE esmaecida (alpha ~0.18) sob um véu carvão —
  * presença sem ruído. Sem partículas, sem parallax, sem grain: o minimalismo
- * aqui é also uma decisão de bateria/clone de UI de emulador.
+ * aqui é também uma decisão de bateria/clone de UI de emulador.
  *
  * Nenhum valor visual é fixado fora daqui — as telas consomem [PortPalette].
  */
@@ -66,11 +66,12 @@ object PortPalette {
     /** Erro (dados ausentes, permissão revogada). */
     val error = Color(0xFFFF6B6B)
 
-    /** Contorno de botão fantasma (branco a 14%). */
-    val ghostBorder = Color(0x24FFFFFF)
+    /** Contorno de chip não-selecionado (branco a 28% — affordance ≥3:1
+     *  sobre carvão, WCAG 1.4.11 para elementos não-texto). */
+    val ghostBorder = Color(0x47FFFFFF)
 
-    /** Contorno de botão fantasma em destaque (empty state — branco a 32%). */
-    val ghostBorderStrong = Color(0x52FFFFFF)
+    /** Contorno de botão fantasma em destaque (empty state — branco a 40%). */
+    val ghostBorderStrong = Color(0x66FFFFFF)
 
     /** Texto sobre superfícies no accent ("onPrimary" do sistema Mel & Carvão). */
     val onAccent = Color(0xFF141008)
@@ -172,7 +173,7 @@ fun PortScreenTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = config.accent,
-            onPrimary = Color(0xFF141008),
+            onPrimary = PortPalette.onAccent,
             secondary = config.accentDeep,
             background = PortPalette.background,
             onBackground = PortPalette.textPrimary,
