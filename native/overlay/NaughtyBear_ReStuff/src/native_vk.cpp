@@ -1695,8 +1695,21 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
 #endif
       }
     } else {
-      // Nothing new to draw -- yield the core to the guest and re-poll soon.
-      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+      // Nothing new to draw -- yield the core to the guest.
+      // ANDROID PORT (perf): espera orientada a evento na cv da fila de frames
+      // em vez do poll de 3ms legado (~333 wakeups/s de bateria/thermal quando
+      // o jogo está em menu/pausa ou produz menos frames do que apresentamos).
+      // Acorda IMEDIATAMENTE na publicação do próximo frame (EndGuestFrame ->
+      // notify) — latência de apresentação melhor que o poll de 3ms — e o
+      // timeout de 100ms preserva o deadline do repaint do overlay
+      // (overlay_due, checado no topo do loop). RESTUFF_NO_FRAMECV=1 restaura
+      // o poll legado para A/B.
+      static const bool s_no_framecv = getenv("RESTUFF_NO_FRAMECV") != nullptr;
+      if (s_no_framecv) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+      } else {
+        restuff::renderer::WaitForRawFrame(std::chrono::milliseconds(100));
+      }
     }
   }
 }

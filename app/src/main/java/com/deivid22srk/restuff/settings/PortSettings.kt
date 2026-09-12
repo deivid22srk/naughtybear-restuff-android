@@ -50,7 +50,12 @@ data class PortSettings(
     val overlayScale: Float = 1f,               // 0.7 .. 1.6
     val hapticFeedback: Boolean = true,
     // Diagnóstico (log detalhado persistido)
-    val detailedLogs: Boolean = true,           // log_level=debug no toml + REX_LOG_LEVEL
+    // ARM PERF: default false — o nível "info" mantém erros/warnings (com
+    // stack traces) no log persistido sem pagar o custo mobile do "debug":
+    // fmt+mutex+write síncrono por evento em dezenas de sítios do kernel/FS
+    // do SDK, rotacionando arquivo no storage público. O toggle continua
+    // disponível na tela de Configurações para sessões de diagnóstico.
+    val detailedLogs: Boolean = false,         // log_level=info no toml + REX_LOG_LEVEL
     // Efeitos da tela inicial
     val particlesEnabled: Boolean = true,
     val reduceMotionOverride: Boolean = false,
@@ -74,7 +79,7 @@ class PortSettingsRepository(context: Context) {
             overlayOpacity = prefs.getFloat(K_OPACITY, 0.65f).coerceIn(0.2f, 1f),
             overlayScale = prefs.getFloat(K_PADSCALE, 1f).coerceIn(0.7f, 1.6f),
             hapticFeedback = prefs.getBoolean(K_HAPTIC, true),
-            detailedLogs = prefs.getBoolean(K_DETAILED_LOGS, true),
+            detailedLogs = prefs.getBoolean(K_DETAILED_LOGS, false),
             particlesEnabled = prefs.getBoolean(K_PARTICLES, true),
             reduceMotionOverride = prefs.getBoolean(K_REDUCE_MOTION, false),
         )

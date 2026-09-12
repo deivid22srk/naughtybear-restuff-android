@@ -312,11 +312,34 @@ void on_swap() {
         const double target_interval = 1.0 / static_cast<double>(cap);
         const auto deadline = last_swap + duration(target_interval);
 
-        // Coarse sleep until ~2ms before deadline, then spin for accuracy.
+#ifdef _WIN32
+        // Windows: coarse sleep until ~2ms before deadline, then spin for
+        // accuracy (sleeps overshoot 1-15ms even with timeBeginPeriod).
         const auto sleep_until = deadline - std::chrono::milliseconds(2);
         if (now < sleep_until)
             std::this_thread::sleep_until(sleep_until);
         while (clock::now() < deadline) {}
+#else
+        // ANDROID PORT (perf): em POSIX o nanosleep sobre o hrtimer
+        // (high_resolution_clock == steady_clock/CLOCK_MONOTONIC) acorda com
+        // precisão sub-milissegundo — o spin final de até 2ms/frame existia
+        // só para compensar a granularidade grossa do Windows. Em ARM um spin
+        // de 2ms a 60fps esquenta o core (~12% de um núcleo), bloqueia o
+        // race-to-idle dos clusters little e piora thermal/bateria, por
+        // precision que um budget de 16.7ms não percebe (~0.1ms de overshoot
+        // do sleep). Sleep_until direto no deadline — mesmo padrão que o
+        // PresentThreadMain já usa em POSIX. RESTUFF_SPIN_LIMITER=1 restaura
+        // o spin para A/B.
+        static const bool s_spin_limiter = getenv("RESTUFF_SPIN_LIMITER") != nullptr;
+        if (s_spin_limiter) {
+            const auto sleep_until = deadline - std::chrono::milliseconds(2);
+            if (now < sleep_until)
+                std::this_thread::sleep_until(sleep_until);
+            while (clock::now() < deadline) {}
+        } else if (now < deadline) {
+            std::this_thread::sleep_until(deadline);
+        }
+#endif
     }
 
     last_swap = clock::now();

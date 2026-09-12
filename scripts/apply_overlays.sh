@@ -90,7 +90,9 @@ for rel in \
     src/restuff_app.h \
     src/video_player.h \
     src/hooks.cpp \
-    src/native_vk.cpp
+    src/native_vk.cpp \
+    src/renderer/guest_d3d_hooks.cpp \
+    src/renderer/up_draws.h
 do
     replace "$OVERLAY/NaughtyBear_ReStuff/$rel" "$ROOT/restuff/$rel"
 done

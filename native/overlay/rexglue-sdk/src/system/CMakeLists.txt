@@ -98,6 +98,15 @@ target_link_libraries(rexruntime
         xxHash::xxhash
 )
 
+if(ANDROID)
+    # ARM PERF (port Android): pin do caminho NATIVO NEON do SIMDE — mesmo
+    # racional do rexcore (ver native/overlay/rexglue-sdk/src/core/CMakeLists.txt);
+    # rexruntime consome <simde/x86/sse.h> direto (context.h/intrinsics.h) e
+    # não pode depender da propagação transitiva. GUARD host idem: build do
+    # codegen no x86_64 usa esta mesma árvore.
+    target_compile_definitions(rexruntime PUBLIC SIMDE_ARM_NEON_A64V8_NATIVE=1)
+endif()
+
 if(REXGLUE_ENABLE_TRACY)
     # TARGET_NAME is what tells install(EXPORT) this text is a target to
     # namespace. Without it the plain name survives into the installed config

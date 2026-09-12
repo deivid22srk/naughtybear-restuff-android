@@ -126,8 +126,19 @@ target_include_directories(restuff PRIVATE
 # Opções de compilação do código recompilado — mesmo conjunto do
 # generated/rexglue.cmake upstream (Android: sem -fasync-exceptions, que é
 # só para SEH Windows; SIMDE emite NEON no arm64).
+#
+# ARM PERF/diagnóstico: -gline-tables-only (era -g0). O crash handler do port
+# (android_main.cpp, _Unwind_Backtrace) imprime "módulo+0xOFFSET" usando a
+# tabela dinâmica (dladdr) — com -g0 esses endereços nunca viram arquivo:linha
+# em lugar nenhum. Com line tables preservadas no APK (ver keepDebugSymbols em
+# app/build.gradle.kts — sem ele o AGP stripa .debug_line) qualquer backtrace
+# de produção se resolve OFFLINE com llvm-symbolizer contra o próprio APK.
+# Custo: ~1-3% de tamanho no .so. Flag clang-only: g++ não conhece o nível
+# (verificado) — o generator expr recai em -g0 no GCC. -fno-omit-frame-pointer
+# abaixo mantém o unwind caminhável.
 target_compile_options(restuff PRIVATE
-    $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-g0>
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-gline-tables-only>
+    $<$<CXX_COMPILER_ID:GNU>:-g0>
     -Wno-unused-parameter
     -Wno-unused-variable
 )

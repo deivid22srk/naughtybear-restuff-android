@@ -114,6 +114,20 @@ class GameActivity : SDLActivity() {
                 // belt-and-suspenders (regenerado a cada boot).
                 appendLine("vulkan_require_geometry_shader = false")
                 appendLine("vulkan_require_fill_mode_non_solid = false")
+                // ARM PERF (mobile): present mode FIFO-first. A preferência
+                // do SDK é IMMEDIATE > MAILBOX > FIFO_RELAXED > FIFO — decisão
+                // de latência de DESKTOP (tearing/VRR). Em mobile: painéis
+                // 60/90/120Hz + pacing de 60Hz wall-clock com MAILBOX/IMMEDIATE
+                // geram presents sem conteúdo novo (judder + consumo); FIFO
+                // alinha a apresentação ao vsync do painel, deixa o compositor
+                // agendar em baixa frequência e é o ÚNICO modo garantido em
+                // drivers Android (Turnip/Adreno/Mali). Desligar os três
+                // cvars faz a cascata do presenter cair no FIFO. Mesmo padrão
+                // belt-and-suspenders dos vulkan_require_* acima — regenerado
+                // a cada boot, zero código nativo.
+                appendLine("vulkan_allow_present_mode_immediate = false")
+                appendLine("vulkan_allow_present_mode_mailbox = false")
+                appendLine("vulkan_allow_present_mode_fifo_relaxed = false")
             }
         )
 

@@ -27,6 +27,11 @@
 #include <rex/memory.h>
 #include <rex/platform.h>
 
+#ifndef _WIN32
+#include <sys/mman.h>  // madvise (ANDROID PORT perf)
+#include <cstdlib>      // getenv (A/B do madvise)
+#endif
+
 namespace rex::filesystem {
 
 using namespace rex::literals;
@@ -72,6 +77,25 @@ bool DiscImageDevice::Initialize() {
     REXFS_ERROR("Failed to read all GDFX entries: {}", static_cast<int>(result));
     return false;
   }
+
+#ifndef _WIN32
+  // ANDROID PORT (perf): dicas de readahead para o mmap da imagem do jogo.
+  // O parse do boot (acima) varre a árvore de diretórios de forma sequencial
+  // — o readahead default do kernel (128KB por fault) é BENÉFICO ali e fica
+  // intacto. No gameplay o padrão inverte: as leituras lazy de assets
+  // (texturas/malhas por draw) intercalam setores distantes pela imagem XGD,
+  // e o readahead de 128KB lê e polui o page cache com dados que ninguém
+  // pediu — em flash eMMC/UFS isso dobra a largura de banda de leitura real
+  // e disputa o controlador com o streaming de áudio. MADV_RANDOM reduz a
+  // janela de prefetch ao mínimo (o page fault on-demand continua igual —
+  // zero mudança semântica de acesso). Hint only: falha = no-op.
+  // RESTUFF_NO_MADVISE=1 desliga para A/B em device (loads sequenciais
+  // grandes podem preferir o readahead default).
+  static const bool s_no_madvise = getenv("RESTUFF_NO_MADVISE") != nullptr;
+  if (!s_no_madvise) {
+    madvise(mmap_->data(), mmap_->size(), MADV_RANDOM);
+  }
+#endif
 
   return true;
 }

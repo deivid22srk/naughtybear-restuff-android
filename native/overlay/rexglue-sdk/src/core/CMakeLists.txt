@@ -126,6 +126,20 @@ target_link_libraries(rexcore
         xxHash::xxhash
 )
 
+if(ANDROID)
+    # ARM PERF (port Android): pina explicitamente o caminho NATIVO NEON do
+    # SIMDE. Hoje a seleção funciona por auto-detecção (simde-features.h:
+    # SIMDE_ARCH_ARM_NEON + SIMDE_ARCH_AARCH64 do compilador definem
+    # SIMDE_ARM_NEON_A64V8_NATIVE) — correto, mas vulnerável a drift num bump
+    # do submódulo simde (v0.8.2 hoje). Pinar = o código recompilado do jogo
+    # (que emite simde_mm_* em volume) garante A64V8/NEON em TODOS os bumps,
+    # compilando erro cedo se um toolchain futuro deixar de suportar.
+    # GUARD if(ANDROID) OBRIGATÓRIO: esta árvore também compila no HOST
+    # x86_64 (build_host_codegen.sh — CLI rexglue do codegen) e o define
+    # NATIVE de NEON em x86 quebraria os headers do simde.
+    target_compile_definitions(rexcore PUBLIC SIMDE_ARM_NEON_A64V8_NATIVE=1)
+endif()
+
 if(REXGLUE_USE_D3D12)
     target_compile_definitions(rexcore PUBLIC REX_HAS_D3D12=1)
 endif()
