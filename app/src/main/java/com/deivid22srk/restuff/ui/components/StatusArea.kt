@@ -1,58 +1,45 @@
 package com.deivid22srk.restuff.ui.components
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.deivid22srk.restuff.config.PortBranding
+import com.deivid22srk.restuff.ui.theme.PortPalette
+import com.deivid22srk.restuff.ui.theme.PortType
 import com.deivid22srk.restuff.viewmodel.DataPhase
 
 /**
- * Área de status com os estados do ciclo de dados (mais erro de permissão).
- * Cada estado tem ícone, cor e microanimação próprios, com transição cruzada:
- *
- *   Idle       → lupa suave: "nenhum dado selecionado" (estado inicial, sem busca)
- *   Validating → arco duplo girando/pulsando, cor = accent do port
- *   NotFound   → alerta vermelho suave + dica com o arquivo esperado
- *   Found      → check verde + nome do arquivo detectado em destaque
+ * Estado dos dados do jogo no design "Mel & Carvão": UMA linha de status —
+ * ponto de cor (8dp) + frase — e, quando há detalhe, uma linha de apoio em
+ * tipografia quieta. O ponto pulsa devagar apenas enquanto valida.
+ * Sem painéis, sem ícones grandes: a cor do ponto carrega o semáforo.
  */
 @Composable
 fun StatusArea(phase: DataPhase, compact: Boolean, reduceMotion: Boolean) {
@@ -61,165 +48,113 @@ fun StatusArea(phase: DataPhase, compact: Boolean, reduceMotion: Boolean) {
     AnimatedContent(
         targetState = phase,
         transitionSpec = {
-            (fadeIn(tween(360, delayMillis = 60)) +
-                slideInVertically(tween(360, easing = FastOutSlowInEasing)) { it / 5 })
-                .togetherWith(fadeOut(tween(180)))
+            (fadeIn(tween(320)) +
+                slideInVertically(tween(320)) { it / 6 })
+                .togetherWith(fadeOut(tween(160)))
         },
         label = "statusContent",
         modifier = Modifier.fillMaxWidth()
     ) { p ->
         when (p) {
-            is DataPhase.Idle -> StatusRow(
-                tint = Color(0xFF9DB2D6),
+            is DataPhase.Idle -> StatusLine(
+                dotColor = PortPalette.textSecondary,
                 title = config.labelIdle,
-                description = config.labelIdleHint
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = Color(0xFF9DB2D6),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+                detail = config.labelIdleHint,
+                pulsing = false,
+                reduceMotion = reduceMotion
+            )
 
-            is DataPhase.Validating -> StatusRow(
-                tint = config.accent,
+            is DataPhase.Validating -> StatusLine(
+                dotColor = config.accent,
                 title = config.labelValidating,
-                description = null
-            ) {
-                SearchingIndicator(tint = config.accent)
-            }
+                detail = null,
+                pulsing = true,
+                reduceMotion = reduceMotion
+            )
 
-            is DataPhase.NotFound -> StatusRow(
-                tint = Color(0xFFFF6B6B),
-                title = config.labelNotFound,
-                description = config.labelNotFoundHint.format(
-                    config.expectedDataFiles.firstOrNull() ?: "—"
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.ErrorOutline,
-                    contentDescription = null,
-                    tint = Color(0xFFFF6B6B),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-
-            is DataPhase.Found -> StatusRow(
-                tint = Color(0xFF4ADE80),
+            is DataPhase.Found -> StatusLine(
+                dotColor = PortPalette.success,
                 title = config.labelFound,
-                description = config.labelFoundFile.format(p.fileName)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = null,
-                    tint = Color(0xFF4ADE80),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+                detail = p.fileName,
+                detailMono = true,
+                pulsing = false,
+                reduceMotion = reduceMotion
+            )
 
-            is DataPhase.PermissionError -> StatusRow(
-                tint = Color(0xFFFF6B6B),
-                title = config.labelPermissionError,
-                description = config.labelNotFoundHint.format(
+            is DataPhase.NotFound -> StatusLine(
+                dotColor = PortPalette.error,
+                title = config.labelNotFound,
+                detail = config.labelNotFoundHint.format(
                     config.expectedDataFiles.firstOrNull() ?: "—"
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.ErrorOutline,
-                    contentDescription = null,
-                    tint = Color(0xFFFF6B6B),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+                ),
+                pulsing = false,
+                reduceMotion = reduceMotion
+            )
+
+            is DataPhase.PermissionError -> StatusLine(
+                dotColor = PortPalette.error,
+                title = config.labelPermissionError,
+                detail = null,
+                pulsing = false,
+                reduceMotion = reduceMotion
+            )
         }
     }
 }
 
 @Composable
-private fun StatusRow(
-    tint: Color,
+private fun StatusLine(
+    dotColor: Color,
     title: String,
-    description: String?,
-    icon: @Composable () -> Unit,
+    detail: String?,
+    detailMono: Boolean = false,
+    pulsing: Boolean,
+    reduceMotion: Boolean,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.padding(horizontal = 4.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .background(tint.copy(alpha = 0.14f), CircleShape)
-                .border(1.dp, tint.copy(alpha = 0.35f), CircleShape),
-            contentAlignment = Alignment.Center
-        ) { icon() }
+    val pulse: Float = if (pulsing && !reduceMotion) {
+        val transition = rememberInfiniteTransition(label = "statusPulse")
+        val v by transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                tween(700),
+                RepeatMode.Reverse
+            ),
+            label = "pulse"
+        )
+        v
+    } else {
+        1f
+    }
 
-        Column {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        androidx.compose.foundation.layout.Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .graphicsLayer { alpha = pulse }
+                    .background(dotColor, CircleShape)
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
                 text = title,
-                color = tint,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.6.sp
+                color = PortPalette.textPrimary,
+                style = PortType.rowLabel
             )
-            if (description != null) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = description,
-                    color = Color.White.copy(alpha = 0.55f),
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
-                    maxLines = 2
-                )
-            }
         }
-    }
-}
-
-/** Arco duplo girando com pulso de escala — indicador "validando". */
-@Composable
-private fun SearchingIndicator(tint: Color) {
-    val transition = rememberInfiniteTransition(label = "searching")
-    val rot by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)),
-        label = "rot"
-    )
-    val sc by transition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            tween(1300, easing = FastOutSlowInEasing),
-            RepeatMode.Reverse
-        ),
-        label = "sc"
-    )
-    Canvas(
-        Modifier
-            .size(22.dp)
-            .graphicsLayer {
-                rotationZ = rot
-                scaleX = sc
-                scaleY = sc
-            }
-    ) {
-        val stroke = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
-        drawArc(
-            color = tint,
-            startAngle = 0f,
-            sweepAngle = 96f,
-            useCenter = false,
-            style = stroke
-        )
-        drawArc(
-            color = tint.copy(alpha = 0.35f),
-            startAngle = 180f,
-            sweepAngle = 96f,
-            useCenter = false,
-            style = stroke
-        )
+        if (detail != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = detail,
+                color = PortPalette.textSecondary,
+                style = if (detailMono) PortType.mono else PortType.rowSub,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }

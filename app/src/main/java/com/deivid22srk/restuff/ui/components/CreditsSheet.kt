@@ -4,8 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -14,16 +14,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -33,7 +34,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
@@ -41,7 +41,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,11 +48,13 @@ import androidx.compose.ui.window.Dialog
 import com.deivid22srk.restuff.R
 import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.config.PortLink
+import com.deivid22srk.restuff.ui.theme.PortPalette
+import com.deivid22srk.restuff.ui.theme.PortType
 
 /**
- * Botão de assinatura "Portado por ..." (pill de vidro com coração no accent).
- * Abre o diálogo de créditos com todos os links configurados no
- * [PortBranding.config.links] — YouTube, GitHub, Telegram e projeto base.
+ * Assinatura "Portado por ..." no design "Mel & Carvão": convite tipográfico
+ * discreto (texto secundário + ponto âmbar), sem pílula de vidro. Abre o
+ * diálogo de créditos com os links do [PortBranding.config.links].
  */
 @Composable
 fun CreditsButton(
@@ -63,18 +64,13 @@ fun CreditsButton(
 ) {
     val config = PortBranding.config
     val haptics = LocalHapticFeedback.current
-    val entrance = rememberEntrance(920, reduceMotion)
+    val entrance = rememberEntrance(460, reduceMotion)
 
     Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
-            .graphicsLayer {
-                alpha = entrance.value
-                translationY = (1f - entrance.value) * 24f
-            }
+            .graphicsLayer { alpha = entrance.value }
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(50))
-            .background(Color.White.copy(alpha = 0.07f))
-            .border(1.dp, config.accent.copy(alpha = 0.35f), RoundedCornerShape(50))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
@@ -82,35 +78,28 @@ fun CreditsButton(
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             }
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        contentAlignment = Alignment.Center
+            .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Favorite,
-                contentDescription = config.contentDescCredits,
-                tint = config.accent,
-                modifier = Modifier.size(15.dp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(4.dp)
+                    .background(config.accent, CircleShape)
             )
+            Spacer(Modifier.width(8.dp))
             Text(
                 text = config.portedByLabel,
-                color = Color.White.copy(alpha = 0.85f),
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.6.sp,
-                textAlign = TextAlign.Center
+                color = PortPalette.textTertiary,
+                style = PortType.mono
             )
         }
     }
 }
 
 /**
- * Diálogo de créditos: header com a marca do port + uma linha por link
- * (ícone tintado, nome, detalhe e ícone "abrir"). Cada linha abre a URL no
- * navegador; sem navegador disponível, mostra um Toast explicativo.
+ * Diálogo de créditos — painel carvão plano: marca + título, LINHA DO MEL,
+ * links como linhas hairline (ícone tintado + textos), rodapé quieto.
+ * Cada linha abre a URL no navegador; sem navegador, Toast explicativo.
  */
 @Composable
 fun CreditsDialog(onDismiss: () -> Unit) {
@@ -119,61 +108,66 @@ fun CreditsDialog(onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = Color(0xFF12121C),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+            shape = RoundedCornerShape(18.dp),
+            color = PortPalette.surface,
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 22.dp, bottom = 12.dp)
+                    .padding(horizontal = 22.dp)
+                    .padding(top = 22.dp, bottom = 10.dp)
             ) {
-                // ---- Header ----------------------------------------------
+                // ---- Header: marca + identidade ---------------------------
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    androidx.compose.foundation.Image(
+                    Image(
                         painter = painterResource(R.drawable.ic_logo_mark),
                         contentDescription = null,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(34.dp)
                     )
                     Column {
                         Text(
                             text = config.creditsTitle,
-                            color = Color.White,
-                            fontSize = 16.5.sp,
-                            fontWeight = FontWeight.Bold
+                            color = PortPalette.textPrimary,
+                            style = PortType.titleScreen
                         )
                         Text(
                             text = config.creditsSubtitle,
-                            color = Color.White.copy(alpha = 0.50f),
-                            fontSize = 11.5.sp,
-                            lineHeight = 15.sp
+                            color = PortPalette.textSecondary,
+                            style = PortType.rowSub
                         )
                     }
                 }
 
-                Spacer(Modifier.size(18.dp))
+                Spacer(Modifier.height(14.dp))
+                HoneyLine(color = config.accent)
+                Spacer(Modifier.height(6.dp))
 
-                // ---- Links ------------------------------------------------
-                config.links.forEach { link ->
+                // ---- Links: linhas com hairline entre si -------------------
+                config.links.forEachIndexed { index, link ->
+                    if (index > 0) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(PortPalette.hairline)
+                        )
+                    }
                     LinkRow(link) { openInBrowser(context, link.url) }
-                    Spacer(Modifier.size(6.dp))
                 }
 
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Text(
                     text = config.creditsFooter,
-                    color = Color.White.copy(alpha = 0.38f),
+                    color = PortPalette.textTertiary,
                     fontSize = 10.sp,
                     lineHeight = 14.sp
                 )
 
-                Spacer(Modifier.size(6.dp))
                 TextButton(
                     onClick = onDismiss,
                     modifier = Modifier.align(Alignment.End)
@@ -181,7 +175,7 @@ fun CreditsDialog(onDismiss: () -> Unit) {
                     Text(
                         text = config.labelClose,
                         color = config.accent,
-                        fontWeight = FontWeight.SemiBold
+                        style = PortType.rowLabel
                     )
                 }
             }
@@ -197,46 +191,35 @@ private fun LinkRow(link: PortLink, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.05f))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
             ) { onClick() }
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .padding(vertical = 8.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .background(link.tint.copy(alpha = 0.16f), RoundedCornerShape(11.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = link.iconVector(),
-                contentDescription = null,
-                tint = link.tint,
-                modifier = Modifier.size(19.dp)
-            )
-        }
+        Icon(
+            imageVector = link.iconVector(),
+            contentDescription = null,
+            tint = link.tint,
+            modifier = Modifier.size(18.dp)
+        )
         Column(Modifier.weight(1f)) {
             Text(
                 text = link.label,
-                color = Color.White,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.SemiBold
+                color = PortPalette.textPrimary,
+                style = PortType.rowLabel
             )
             Text(
                 text = link.description,
-                color = Color.White.copy(alpha = 0.50f),
-                fontSize = 11.sp,
-                lineHeight = 14.sp
+                color = PortPalette.textSecondary,
+                style = PortType.rowSub
             )
         }
         Icon(
             imageVector = Icons.AutoMirrored.Filled.OpenInNew,
             contentDescription = null,
-            tint = Color.White.copy(alpha = 0.45f),
-            modifier = Modifier.size(16.dp)
+            tint = PortPalette.textTertiary,
+            modifier = Modifier.size(14.dp)
         )
     }
 }

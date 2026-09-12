@@ -1,29 +1,32 @@
 package com.deivid22srk.restuff.ui.components
 
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import com.deivid22srk.restuff.config.PortBranding
+import com.deivid22srk.restuff.ui.theme.PortPalette
 
 /**
- * Botão secundário "Selecionar Pasta" (ghost). Quando os dados já estão
- * prontos, entra no estado desabilitado elegante: texto esmaecido, sem
- * ripple, mantendo o alvo de 48 dp para leitores de tela.
+ * AÇÃO SECUNDÁRIA da tela inicial no design "Mel & Carvão": um convite
+ * quieto — texto discreto com glifo pequeno, sem caixa, sem borda. A
+ * hierarquia fica clara por contraste tipográfico (o primário é sólido).
  */
 @Composable
 fun FolderButton(
@@ -35,35 +38,33 @@ fun FolderButton(
     modifier: Modifier = Modifier,
 ) {
     val config = PortBranding.config
-    val entrance = rememberEntrance(if (compact) 760 else 850, reduceMotion)
+    val entrance = rememberEntrance(360, reduceMotion)
 
-    TextButton(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(14.dp),
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-        colors = ButtonDefaults.textButtonColors(
-            contentColor = Color.White.copy(alpha = if (enabled) 0.78f else 0.34f),
-            disabledContentColor = Color.White.copy(alpha = 0.30f)
-        ),
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
             .heightIn(min = 48.dp)
-            .graphicsLayer {
-                alpha = entrance.value
-                translationY = (1f - entrance.value) * 28f
-            }
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = enabled
+            ) { onClick() }
+            .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = config.contentDescFolder,
-            modifier = Modifier.size(17.dp)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = config.labelSelectFolder,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 1.1.sp
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = icon,
+                contentDescription = config.contentDescFolder,
+                tint = if (enabled) PortPalette.textSecondary else PortPalette.textTertiary,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = config.labelSelectFolder,
+                color = if (enabled) PortPalette.textSecondary else PortPalette.textTertiary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }

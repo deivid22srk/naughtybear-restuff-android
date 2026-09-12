@@ -5,6 +5,9 @@
  *
  *   fpsLimit          → cvar "fps_cap" do motor (hooks.cpp, cap por software)
  *   vblankHz          → cvar "vblank_hz" (thread de pump do backend Vulkan)
+ *   showFpsCounter    → pill mono sobre o jogo lendo os presents Vulkan
+ *                       REAIS (JNI nativeGetPresentCount — trampoline no
+ *                       vulkan_device.cpp conta cada vkQueuePresentKHR)
  *   unlock60Fps       → flag --fps60 → env RESTUFF_FPS60 (hook de
  *                       PresentationInterval, 30 → 60)
  *   unlockAllCheat    → cvar "unlock_all" (cheats do motor)
@@ -41,6 +44,11 @@ data class PortSettings(
     // Desempenho (motor)
     val fpsLimit: FpsLimitOption = FpsLimitOption.FPS_60,
     val vblankHz: Int = 120,                    // 30 .. 240 (cvar vblank_hz)
+    // Contador de FPS sobre o jogo: lê o total de vkQueuePresentKHR do
+    // dispositivo Vulkan (contado por um trampoline no vulkan_device.cpp)
+    // e calcula a taxa no próprio overlay — nada de estimativa por
+    // Choreographer (que mede o vsync do painel, não o jogo).
+    val showFpsCounter: Boolean = false,
     // Motor ReStuff
     val unlockAllCheat: Boolean = false,        // unlock_all (cheats)
     val unlock60Fps: Boolean = true,            // RESTUFF_FPS60 (unlock vblank)
@@ -77,6 +85,7 @@ class PortSettingsRepository(context: Context) {
         return PortSettings(
             fpsLimit = enumOf(prefs.getString(K_FPS, null), FpsLimitOption.FPS_60),
             vblankHz = prefs.getInt(K_VBLANK, 120).coerceIn(30, 240),
+            showFpsCounter = prefs.getBoolean(K_SHOW_FPS, false),
             unlockAllCheat = prefs.getBoolean(K_UNLOCK_ALL, false),
             unlock60Fps = prefs.getBoolean(K_UNLOCK_60FPS, true),
             textureMods = prefs.getBoolean(K_TEX_MODS, false),
@@ -94,6 +103,7 @@ class PortSettingsRepository(context: Context) {
         prefs.edit()
             .putString(K_FPS, s.fpsLimit.name)
             .putInt(K_VBLANK, s.vblankHz)
+            .putBoolean(K_SHOW_FPS, s.showFpsCounter)
             .putBoolean(K_UNLOCK_ALL, s.unlockAllCheat)
             .putBoolean(K_UNLOCK_60FPS, s.unlock60Fps)
             .putBoolean(K_TEX_MODS, s.textureMods)
@@ -113,6 +123,7 @@ class PortSettingsRepository(context: Context) {
     private companion object {
         const val K_FPS = "fps_limit"
         const val K_VBLANK = "restuff_vblank_hz"
+        const val K_SHOW_FPS = "show_fps_counter"
         const val K_UNLOCK_ALL = "restuff_unlock_all"
         const val K_UNLOCK_60FPS = "restuff_unlock_60fps"
         const val K_TEX_MODS = "restuff_tex_mods"

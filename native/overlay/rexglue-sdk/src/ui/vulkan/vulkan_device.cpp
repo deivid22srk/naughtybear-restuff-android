@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -55,6 +56,28 @@ REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid,
 namespace rex {
 namespace ui {
 namespace vulkan {
+
+// ANDROID PORT (contador de FPS) — contador global com linkage C para ser
+// declarado extern no android_main.cpp (mesma .so: librestuff.so).
+extern "C" {
+std::atomic<uint64_t> g_rexrestuff_vk_present_count{0};
+}
+
+namespace {
+
+PFN_vkQueuePresentKHR g_real_vkQueuePresentKHR = nullptr;
+
+// Trampolim contador: encaminha o present e incrementa o contador apenas
+// quando o quadro de fato foi aceito para exibição.
+VkResult VKAPI_CALL PresentCounterTrampoline(VkQueue queue, const VkPresentInfoKHR* info) {
+  const VkResult result = g_real_vkQueuePresentKHR(queue, info);
+  if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+    g_rexrestuff_vk_present_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  return result;
+}
+
+}  // namespace
 
 template <typename Structure, VkStructureType StructureType>
 struct VulkanFeatures {
@@ -821,6 +844,20 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 
 #undef XE_UI_VULKAN_FUNCTION
+
+  // ------------------------------------------------------------------
+  // ANDROID PORT (contador de FPS): envolve o vkQueuePresentKHR da
+  // dispatch table com um trampolim que conta cada quadro apresentado com
+  // resultado SUCCESS/SUBOPTIMAL. O contador global (linkage C) é lido
+  // via JNI (android_main.cpp → NativeBridge.nativeGetPresentCount) pelo
+  // overlay de FPS do GameActivity — é o frame rate REAL do motor (todo
+  // o pipeline — jogo + UI composta — passa por este único ponteiro).
+  // Custo: um atomic relaxed increment por quadro (imperceptível).
+  // ------------------------------------------------------------------
+  if (dfn.vkQueuePresentKHR != nullptr && dfn.vkQueuePresentKHR != &PresentCounterTrampoline) {
+    g_real_vkQueuePresentKHR = dfn.vkQueuePresentKHR;
+    dfn.vkQueuePresentKHR = &PresentCounterTrampoline;
+  }
 
   if (!functions_loaded) {
     REXLOG_ERROR("Failed to get all Vulkan device function pointers for '{}'",

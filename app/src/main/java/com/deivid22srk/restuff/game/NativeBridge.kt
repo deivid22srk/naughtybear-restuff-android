@@ -31,6 +31,16 @@ object NativeBridge {
     external fun nativeGetAbi(): String
 
     /**
+     * Total acumulado de quadros APRESENTADOS pelo backend Vulkan (contados
+     * por um trampoline sobre vkQueuePresentKHR no vulkan_device.cpp — cada
+     * present com resultado SUCCESS/SUBOPTIMAL incrementa o contador global).
+     *
+     * O overlay de FPS (FpsCounterView) faz a diferença entre duas leituras
+     * para calcular a taxa real do MOTOR — não a taxa de vsync do painel.
+     */
+    external fun nativeGetPresentCount(): Long
+
+    /**
      * Envia o estado consolidado do gamepad virtual (overlay) ao SDL virtual
      * joystick P1. Chamado a cada frame de toque (throttled pelo overlay).
      *

@@ -26,6 +26,7 @@ import java.util.Locale
 class GameActivity : SDLActivity() {
 
     private var virtualPad: VirtualGamepadView? = null
+    private var fpsCounter: FpsCounterView? = null
 
     /**
      * Resolve o diretório de logs no STORAGE PÚBLICO
@@ -166,8 +167,8 @@ class GameActivity : SDLActivity() {
 
         // Overlay do virtual gamepad por cima da SDLSurface.
         val settings = PortSettingsRepository(this).load()
-        if (settings.showOverlayControls) {
-            val layout = SDLActivity.getContentView() as? ViewGroup ?: return
+        val layout = SDLActivity.getContentView() as? ViewGroup
+        if (layout != null && settings.showOverlayControls) {
             val pad = VirtualGamepadView(
                 context = this,
                 opacity = settings.overlayOpacity,
@@ -181,9 +182,18 @@ class GameActivity : SDLActivity() {
             layout.addView(pad, params)
             virtualPad = pad
         }
+
+        // Pill de FPS (design Mel & Carvão): mono âmbar no canto superior
+        // direito, lendo os presents Vulkan REAIS via JNI — ativada nas
+        // Configurações (Desempenho → Contador de FPS). Não consome toques.
+        if (settings.showFpsCounter) {
+            fpsCounter = FpsCounterView.addTo(this)
+        }
     }
 
     override fun onDestroy() {
+        fpsCounter?.stop()
+        fpsCounter = null
         virtualPad?.shutdown()
         virtualPad = null
         super.onDestroy()

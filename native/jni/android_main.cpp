@@ -17,6 +17,8 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -318,6 +320,20 @@ Java_com_deivid22srk_restuff_game_NativeBridge_nativeSetVirtualPadState(
     JNIEnv*, jclass, jint buttons, jint lx, jint ly, jint rx, jint ry, jint lt,
     jint rt) {
   restuff_android::ApplyVirtualPad(buttons, lx, ly, rx, ry, lt, rt);
+}
+
+// Contador de FPS (design "Mel & Carvão"): total acumulado de quadros
+// apresentados pelo backend Vulkan. O contador vive no vulkan_device.cpp
+// (overlay do rexglue-sdk) como g_rexrestuff_vk_present_count com linkage
+// C — um atomic relaxed increment por present via trampolim sobre
+// vkQueuePresentKHR. O overlay Kotlin (FpsCounterView) diferencia duas
+// leituras para calcular a taxa real do MOTOR.
+extern "C" std::atomic<uint64_t> g_rexrestuff_vk_present_count;
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_deivid22srk_restuff_game_NativeBridge_nativeGetPresentCount(JNIEnv*, jclass) {
+  return static_cast<jlong>(
+      g_rexrestuff_vk_present_count.load(std::memory_order_relaxed));
 }
 
 // ----------------------------------------------------------------------
