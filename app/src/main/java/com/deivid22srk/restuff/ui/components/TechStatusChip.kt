@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.data.GpuDriverManager
 import com.deivid22srk.restuff.ui.theme.PortPalette

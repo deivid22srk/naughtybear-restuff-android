@@ -11,8 +11,10 @@ import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.view.ViewGroup
 import androidx.compose.ui.graphics.toArgb
 import com.deivid22srk.restuff.config.PortBranding
+import org.libsdl.app.SDLActivity
 
 /**
  * Pill minimalista de FPS sobre o jogo — design "Mel & Carvão":
@@ -122,12 +124,12 @@ class FpsCounterView(context: Context) : TextView(context) {
          * content view ainda não estiver disponível.
          */
         fun addTo(activity: GameActivity): FpsCounterView? {
-            val layout = org.libsdl.app.SDLActivity.getContentView() as? android.view.ViewGroup
+            val layout = SDLActivity.getContentView() as? ViewGroup
                 ?: return null
             val pill = FpsCounterView(activity)
             val params = FrameLayout.LayoutParams(
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.END
             ).apply {
                 topMargin = dpStatic(activity, 14f).toInt()
