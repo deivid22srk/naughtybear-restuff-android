@@ -1,0 +1,297 @@
+# Release do APK (Naughty Bear ReStuff Android)
+#
+# Pipeline de release dedicado (baseado no build.yml):
+#   1. Mesma cadeia de validação do build.yml (testes rápidos ANTES do build
+#      nativo de ~45min: unit tests Kotlin, round-trip do protocolo Vortek,
+#      teste de conversão de formatos vertex);
+#   2. Build SOMENTE release, assinado com o keystore de release versionado
+#      (keystore/release.keystore) via signingConfig "release" do Gradle;
+#   3. Verificação fail-fast: libs nativas no APK, certificado da assinatura
+#      (apksigner) e versionName (aapt2) — nada errado chega à release;
+#   4. Cria a GitHub Release com o APK anexado e o CHANGELOG.md completo como
+#      descrição (via gh CLI + GITHUB_TOKEN).
+#
+# Gatilhos:
+#   - workflow_dispatch: acionamento manual (Actions → Release APK → Run);
+#   - push de tag v*: `git tag v1.1.1 && git push origin v1.1.1` dispara a
+#     release automaticamente (versão derivada da tag).
+#
+# versionCode = AAAAMMDD*100 + <run do release.yml>: sempre maior que os
+# versionCodes das builds de CI (GITHUB_RUN_NUMBER do build.yml, que é um
+# contador por workflow) e monotônico no tempo — segunda release no mesmo
+# dia ganha sufixo +N.
+
+name: Release APK (Naughty Bear ReStuff Android)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão da release, SEM o 'v' (ex: 1.1.0 — tag v1.1.0)"
+        required: true
+        default: "1.1.0"
+      release_title:
+        description: "Título da release (vazio = 'Naughty Bear ReStuff Android v<versão>')"
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+# Necessário p/ criar a tag e a GitHub Release via gh CLI (GITHUB_TOKEN).
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build + assina APK + publica GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout (com submódulos)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # Resolve VERSION/TAG/RELEASE_TITLE/VERSION_CODE p/ os dois gatilhos
+      # (dispatch com inputs, ou push de tag v*) e exporta via GITHUB_ENV.
+      - name: Calcular versão/tag/título da release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TITLE: ${{ inputs.release_title }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+            TITLE="$INPUT_TITLE"
+          else
+            # push de tag v* → versão = nome da tag sem o 'v'
+            VERSION="${GITHUB_REF_NAME#v}"
+            TITLE=""
+          fi
+          [ -n "$VERSION" ] || { echo "ERRO: versão vazia"; exit 1; }
+          [ -n "$TITLE" ] || TITLE="Naughty Bear ReStuff Android v${VERSION}"
+          # versionCode: AAAAMMDD*100 + N (N = nº do run deste workflow).
+          # Ex: 2026091301 — acima de qualquer run number do build.yml.
+          VC=$(( $(date +%Y%m%d) * 100 + (GITHUB_RUN_NUMBER % 100) ))
+          echo "VERSION=$VERSION"       >> "$GITHUB_ENV"
+          echo "TAG=v${VERSION}"        >> "$GITHUB_ENV"
+          echo "RELEASE_TITLE=$TITLE"   >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VC"       >> "$GITHUB_ENV"
+          echo "Release: $TITLE (tag v${VERSION}, versionCode ${VC})"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install host toolchain (cmake, ninja, clang 19)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build curl git \
+            libx11-xcb-dev libx11-dev libwayland-dev wayland-protocols libxkbcommon-dev \
+            libasound2-dev libpulse-dev
+          # clang 19 é OBRIGATÓRIO com as headers libstdc++ 14 do ubuntu-24.04:
+          # <expected> é gated por __cpp_concepts >= 202002L e o clang <=18
+          # define 201907L (P2113 só pousou no clang 19) → std::expected vazio.
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 19
+          echo "CC=clang-19" >> "$GITHUB_ENV"
+          echo "CXX=clang++-19" >> "$GITHUB_ENV"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages (platform, build-tools, NDK)
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" > /dev/null
+          yes | sdkmanager --licenses > /dev/null || true
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Apply port overlays
+        run: bash scripts/apply_overlays.sh
+
+      # Mesma filosofia do build.yml: validações rápidas ANTES do nativo.
+      - name: Kotlin unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Host codegen (rexglue CLI + Default.xex)
+        run: bash scripts/build_host_codegen.sh
+
+      - name: Vortek protocol round-trip test (host)
+        run: |
+          set -e
+          V=native/thirdparty/vortek
+          R=native/thirdparty/vortekrenderer
+          mkdir -p build/rt
+          gcc -c -O1 -Wall -DVK_USE_PLATFORM_ANDROID_KHR -I"$V/include" \
+            "$V/tests/roundtrip_client.c" -o build/rt/client.o
+          gcc -c -O1 -Wall -DVK_USE_PLATFORM_ANDROID_KHR -DVT_SERVER=1 -D_GNU_SOURCE \
+            -I"$R/include" -I"$R/winlator/include" -I"$V/tests/hoststub" \
+            "$V/tests/roundtrip_server.c" -o build/rt/server.o
+          gcc -c -O1 -Wall -I"$V/tests" "$V/tests/roundtrip_main.c" -o build/rt/main.o
+          gcc -c -O1 -DVK_USE_PLATFORM_ANDROID_KHR -I"$V/include" "$V/src/vk_object.c" -o build/rt/vk_object.o
+          gcc -c -O1 -I"$V/include" "$V/src/arrays.c" -o build/rt/arrays.o
+          gcc -O1 build/rt/client.o build/rt/server.o build/rt/main.o \
+            build/rt/vk_object.o build/rt/arrays.o -lpthread -o build/rt/roundtrip
+          ./build/rt/roundtrip
+
+      - name: Vortek vertex-format conversion test (host)
+        run: |
+          set -e
+          V=native/thirdparty/vortek
+          R=native/thirdparty/vortekrenderer
+          mkdir -p build/rt
+          gcc -c -O1 -w -DVK_USE_PLATFORM_ANDROID_KHR -DVT_SERVER=1 -D_GNU_SOURCE \
+            -I"$R/include" -I"$R/winlator/include" -I"$V/tests/hoststub" \
+            "$R/src/shader_inspector.c" -o build/rt/shader_inspector.o
+          gcc -c -O1 -w -DVK_USE_PLATFORM_ANDROID_KHR -DVT_SERVER=1 -D_GNU_SOURCE \
+            -I"$R/include" -I"$R/winlator/include" -I"$V/tests/hoststub" \
+            "$V/tests/unit_formats.c" -o build/rt/unit_formats.o
+          gcc -O1 build/rt/shader_inspector.o build/rt/unit_formats.o \
+            build/rt/arrays.o -lpthread -o build/rt/unit_formats
+          ./build/rt/unit_formats
+
+      - name: Native Android build (librestuff.so)
+        run: bash scripts/build_android_native.sh
+
+      # Sobrescreve versionName/versionCode p/ casar com a tag da release
+      # (defaultConfig do app/build.gradle.kts honra estes envs).
+      - name: Build APK release assinado (Gradle)
+        env:
+          RESTUFF_VERSION_NAME: ${{ env.VERSION }}
+          RESTUFF_VERSION_CODE: ${{ env.VERSION_CODE }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Verify APK native libs (fail-fast se libc++_shared faltar)
+        run: |
+          python3 - <<'EOF'
+          import zipfile, glob, sys
+          apk = glob.glob("app/build/outputs/apk/release/*.apk")[0]
+          print(f"Verificando: {apk}")
+          z = zipfile.ZipFile(apk)
+          libs = sorted(n for n in z.namelist()
+                        if n.startswith("lib/arm64-v8a/") and n.endswith(".so"))
+          print("Libs nativas empacotadas:")
+          for l in libs:
+              print(f"  {l}")
+          required = {
+              "lib/arm64-v8a/librestuff.so",
+              "lib/arm64-v8a/librexruntime.so",
+              "lib/arm64-v8a/libc++_shared.so",
+              # AdrenoTools (driver Turnip custom): hooks precisam estar no
+              # APK (useLegacyPackaging=true extrai p/ nativeLibraryDir).
+              "lib/arm64-v8a/libadrenotools.so",
+              "lib/arm64-v8a/libmain_hook.so",
+              "lib/arm64-v8a/libhook_impl.so",
+              "lib/arm64-v8a/libfile_redirect_hook.so",
+              "lib/arm64-v8a/libgsl_alloc_hook.so",
+              # Vortek (camada de compatibilidade Vulkan, brunodev85/Winlator):
+              # cliente (dlopen direto pelo motor) + servidor (hospedado pelo
+              # android_main.cpp no mesmo processo).
+              "lib/arm64-v8a/libvulkan_vortek.so",
+              "lib/arm64-v8a/libvortekrenderer.so",
+          }
+          missing = required - set(libs)
+          if missing:
+              sys.exit(f"ERRO FATAL: libs ausentes do APK: {sorted(missing)}")
+          print("OK: todas as libs nativas obrigatórias estão no APK")
+          EOF
+
+      # Fail-fast de assinatura: o certificado DEVE ser o do keystore de
+      # release (CN=Naughty Bear ReStuff Android) — nunca o de debug — senão
+      # a release não sai daqui.
+      - name: Verificar assinatura e versão do APK (apksigner + aapt2)
+        run: |
+          set -e
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -n 1)
+          echo "== Certificado da assinatura =="
+          "$APKSIGNER" verify --print-certs "$APK" | tee /tmp/certs.txt
+          grep -q "CN=Naughty Bear ReStuff Android" /tmp/certs.txt \
+            || { echo "ERRO FATAL: certificado inesperado (esperado: keystore de release)"; exit 1; }
+          echo "== Esquemas de assinatura =="
+          "$APKSIGNER" verify -v "$APK" | sed -n '1,12p'
+          echo "== Versão empacotada =="
+          "$AAPT2" dump badging "$APK" | grep "^package:" | tee /tmp/badging.txt
+          grep -q "versionName='${VERSION}'" /tmp/badging.txt \
+            || { echo "ERRO FATAL: versionName != ${VERSION} (override de versão falhou)"; exit 1; }
+          grep -q "versionCode='${VERSION_CODE}'" /tmp/badging.txt \
+            || { echo "ERRO FATAL: versionCode != ${VERSION_CODE}"; exit 1; }
+
+      - name: Rename artifact
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk "dist/NaughtyBear-ReStuff-v${VERSION}-arm64-release.apk"
+          ls -la dist/
+
+      # Backup do APK como artefato do run (além do asset da GitHub Release).
+      - name: Upload APK (artefato do run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: naughtybear-restuff-release-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Upload debug symbols (librestuff.so.unstripped)
+        # ARM PERF/diagnóstico: line tables do build (-gline-tables-only).
+        # O APK recebe a lib stripada (lean); ESTE artefato resolve backtraces
+        # "module+0xOFFSET" da build de RELEASE offline:
+        # llvm-symbolizer --obj=librestuff.so.unstripped 0xOFFSET
+        uses: actions/upload-artifact@v4
+        with:
+          name: naughtybear-restuff-release-debug-symbols
+          path: build/android/*/librestuff.so.unstripped
+          if-no-files-found: warn
+
+      - name: Upload build logs em falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-logs
+          path: |
+            build/host-codegen/CMakeCache.txt
+            build/android/arm64-v8a/CMakeCache.txt
+          if-no-files-found: ignore
+
+      # Cria a tag (se ainda não existir, apontando p/ este commit) e a
+      # GitHub Release com o APK anexado + CHANGELOG.md como descrição.
+      - name: Criar GitHub Release (APK + changelog)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Tag nova → cria apontando p/ este commit; tag existente → reutiliza.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} já existe — a release apontará para ela."
+            TARGET_ARGS=()
+          else
+            TARGET_ARGS=(--target "$GITHUB_SHA")
+          fi
+          {
+            echo "# ${RELEASE_TITLE}"
+            echo ""
+            echo "- **APK:** \`NaughtyBear-ReStuff-v${VERSION}-arm64-release.apk\` (arm64-v8a, assinado com o keystore de release)"
+            echo "- **Commit:** \`${GITHUB_SHA}\`"
+            echo "- **Data:** $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "---"
+            echo ""
+            cat CHANGELOG.md
+          } > release_notes.md
+          gh release create "$TAG" \
+            "dist/NaughtyBear-ReStuff-v${VERSION}-arm64-release.apk" \
+            --title "$RELEASE_TITLE" \
+            --notes-file release_notes.md \
+            --latest \
+            "${TARGET_ARGS[@]}"
+          echo "Release ${TAG} publicada com o APK anexado."

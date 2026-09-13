@@ -13,9 +13,17 @@ android {
         minSdk = 26
         targetSdk = 35
         // versionCode acompanha o número do run do GitHub Actions: cada build
-        // nova instala por cima da anterior (in-place upgrade).
-        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
+        // nova instala por cima da anterior (in-place upgrade). O workflow de
+        // release (release.yml) sobrepõe via RESTUFF_VERSION_CODE =
+        // AAAAMMDD*100 + <run do release.yml> — sempre maior que qualquer run
+        // number do build.yml e monotônico no tempo (segunda release no mesmo
+        // dia ganha sufixo +N).
+        versionCode = System.getenv("RESTUFF_VERSION_CODE")?.toIntOrNull()
+            ?: System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        // release.yml sobrepõe o nome da versão (ex: "1.1.0", casando com a tag
+        // da GitHub Release); builds de CI continuam com "1.0.<run>".
+        versionName = System.getenv("RESTUFF_VERSION_NAME")
+            ?: "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
 
         // ABI única: o recomp (SIMDE/NEON) + SDL3 + Vulkan visam arm64 moderno.
         ndk {
@@ -31,17 +39,29 @@ android {
         }
     }
 
-    // Keystore de debug VERSIONADO no repo (keystore/debug.keystore, senha
-    // padrão "android"): todas as builds de CI saem com a MESMA assinatura,
-    // então o usuário atualiza o app por cima sem desinstalar — preserva os
-    // dados e a permissão SAF da pasta do jogo. (Keystore de debug não é
-    // segredo; nunca use esta configuração para publicar na Play Store.)
+    // Keystores VERSIONADOS no repo (projeto hobby, distribuição via GitHub
+    // Releases / artefatos de CI — senha documentada, não é segredo neste
+    // modelo): todas as builds saem com a MESMA assinatura, então o usuário
+    // atualiza o app por cima sem desinstalar — preserva os dados e a
+    // permissão SAF da pasta do jogo. (NUNCA use estas configurações para
+    // publicar na Play Store — gere um keystore privado seu.)
     signingConfigs {
         getByName("debug") {
             storeFile = rootProject.file("keystore/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+        // Keystore de RELEASE dedicado (assina os APKs do release.yml).
+        // Sobrescrevível por env p/ assinar com chave própria sem editar o
+        // repo (RESTUFF_STORE_PASSWORD/RESTUFF_KEY_ALIAS/RESTUFF_KEY_PASSWORD).
+        // NOTA: builds de CI anteriores a v1.1.0 usavam a assinatura de DEBUG —
+        // a primeira instalação desta exigiu desinstalar a versão anterior.
+        create("release") {
+            storeFile = rootProject.file("keystore/release.keystore")
+            storePassword = System.getenv("RESTUFF_STORE_PASSWORD") ?: "restuff-release-2026"
+            keyAlias = System.getenv("RESTUFF_KEY_ALIAS") ?: "restuff-release"
+            keyPassword = System.getenv("RESTUFF_KEY_PASSWORD") ?: "restuff-release-2026"
         }
     }
 
@@ -52,7 +72,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            // Assinatura de release dedicada (keystore/release.keystore) — o
+            // release.yml verifica o certificado com apksigner antes de
+            // publicar a GitHub Release.
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

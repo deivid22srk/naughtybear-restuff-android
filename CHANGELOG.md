@@ -1,5 +1,58 @@
 # Changelog — naughtybear-restuff-android
 
+## v1.1.0 — feat(vortek): driver Vulkan Vortek + redesign da UI + instrumentação de performance (branch feat/vortek-driver-icone)
+
+Primeira release assinada com keystore de **release** dedicado (`keystore/release.keystore`,
+via `.github/workflows/release.yml`). Builds anteriores de CI usavam a assinatura de debug —
+veja o aviso de instalação no fim desta seção.
+
+### O que entrou
+
+| # | Item | O que é | Valor no Android |
+|---|---|---|---|
+| 1 | **Driver Vortek (experimental)** | Camada de compatibilidade Vulkan do [brunodev85](https://github.com/brunodev85)/Winlator: cliente `libvulkan_vortek.so` (dlopen do motor) + servidor `libvortekrenderer.so` (hospedado pelo `android_main.cpp` no mesmo processo), embutidos no APK; seleção em **Configurações → GPU Drivers**, persistência em `<files>/drivers/active.txt` (escrita atômica + self-heal do caminho `nativeLibraryDir` pós-update) | Driver Vulkan alternativo (fork Turnip/Mesa) com tradução de chamadas — caminho para melhor compatibilidade e performance em Adreno. **Créditos: brunodev85** |
+| 2 | **Novo ícone do app** | Identidade visual própria (easyappicon) | — |
+| 3 | **Redesign minimalista "Mel & Carvão"** | UI repensada (paleta mel/carvão) + **contador de FPS real** medido dos presents Vulkan — não template genérico | Navegação mais leve e diagnóstico de performance honesto |
+| 4 | **Campanha de performance SD695** | Instrumentação always-on do ciclo de frame + dedups de conteúdo; corte do imposto de log I/O (spdlog síncrono em dezenas de sítios por frame) | Menos overhead por frame em gameplay; base de medição para a meta de 30fps |
+| 5 | **Instrumentação de diagnóstico** | "Resolução de cegos" sempre disponível (env sem rebuild) + line tables em artefato CI separado | Diagnóstico de crash/perf em device sem custo no APK |
+
+### Correções estabilizando o Vortek (bugs reportados com logs, em sequência)
+
+| Bug do usuário | Root cause | Fix |
+|---|---|---|
+| **ENOENT ao selecionar Vortek** nas Configurações (log pastebin `8EBkzgjB`) | `<files>/drivers/` nunca era criado no fluxo embutido (o Vortek não tem passo de import, diferente do Turnip) | `writeActiveFile()` com `mkdirs()` + escrita atômica (tmp+rename); self-heal do reconcile; 12 testes JVM de regressão rodando no CI antes do build nativo |
+| **Crash (SIGSEGV) ao iniciar o jogo** com Vortek ativado (log pastebin `uYKCijUd`) | `VK_KHR_swapchain` era removida da criação do device do host (skip list legada do modo X11 sintético do upstream) → `vkGetDeviceProcAddr` devolvia NULL → chamada de ponteiro NULL no primeiro `vkCreateSwapchainKHR` | Extensão fora da skip list + guards anti-NULL na família swapchain + `vkGetPhysicalDevicePresentRectanglesKHR` reescrito como passthrough real |
+| **Renderização corrompida com Vortek** (log4.zip: gameplay + logs) — triângulos gigantes sólidos, malhas 3D ausentes, strobing em transições | Vertex fetch `USCALED PACK32 10-10-10-2` (formato de posição/normal do Xenos, o mais comum em jogos Xbox 360) não era convertido pelo Vortek → pipeline criado com vertex fetch sem suporte no Adreno → rasterização indefinida. 2D/título renderizavam OK (formatos planos, cobertos pelo rewrite SPIR-V existente) — consistente com o vídeo | Conversão USCALED/SSCALED da família PACK32 (A2B10G10R10/A2R10G10B10/A8B8G8R8) + signedness correta no rewrite SPIR-V; fence-wait robusto (fds inicializados, fallback de espera real no servidor, status propagado); índice devolvido também em `VK_SUBOPTIMAL_KHR` (framebuffer OOB em transições). Teste unitário host (21 checagens) no CI |
+
+### Como usar o Vortek
+
+1. **Configurações → GPU Drivers → Vortek (experimental)**.
+2. Inicie o jogo normalmente — o motor carrega o driver Vulkan selecionado.
+3. Para voltar ao driver do sistema (ou Turnip, se importado), selecione o outro na mesma tela.
+
+### ⚠️ Aviso de instalação (mudança de assinatura)
+
+APKs de CI anteriores à v1.1.0 eram assinados com o keystore de **debug**. Esta é a primeira
+build com keystore de **release** — assinaturas diferentes não permitem atualização in-place.
+**Desinstale o app anterior antes de instalar a v1.1.0** e, depois de instalar:
+
+1. Reautorize a pasta do jogo (permissão SAF).
+2. Reative o driver desejado em **Configurações → GPU Drivers** (Vortek ou padrão).
+3. Reconfigure as preferências (as configurações antigas são perdidas com a desinstalação).
+
+A partir da v1.1.0, todas as builds de release compartilham a mesma assinatura — atualizações
+futuras instalam por cima sem desinstalar.
+
+### Validação
+
+- Loop de avaliação independente por tarefa: ENOENT 7.5 → 9.2; crash do swapchain 9/10;
+  renderização 8.3 + follow-ups (UB, vazamento, guards, família A8B8G8R8) — findings aplicados
+  no mesmo branch.
+- CI: testes de unidade Kotlin (12, ENOENT + self-heal), round-trip do protocolo Vortek (8
+  checagens, incl. `vkQueuePresentKHR`), teste de conversão de formatos vertex (21 checagens)
+  — todos rodam ANTES do build nativo de ~45min.
+- Build completo validado no GitHub Actions (`build.yml`) a cada commit do branch.
+
 ## perf(arm64): otimização mobile ARM — bateria, thermal e I/O (branch perf/otimizacao-arm64-mobile)
 
 Auditoria de arquitetura + performance sobre evidência (caminho:linha), implementação
