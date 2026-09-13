@@ -376,7 +376,7 @@ class VirtualGamepadView(
     private fun dpadMaskAt(pad: Pad, x: Float, y: Float): Int {
         val cx = pad.cx * viewW
         val cy = pad.cy * viewH
-        val angle = Math.toDegrees(atan2(y - cy, x - cx))
+        val angle = Math.toDegrees(atan2(y - cy, x - cx).toDouble())
         return when {
             angle >= 157.5 || angle < -157.5 -> BIT_DLEFT
             angle >= 112.5 -> BIT_DLEFT or BIT_DDOWN

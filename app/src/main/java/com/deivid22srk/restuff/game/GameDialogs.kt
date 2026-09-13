@@ -115,6 +115,8 @@ class QuickSettingsDialog(
 
     override fun show() {
         super.show()
+        val metrics = context.resources.displayMetrics
+        val w = (metrics.widthPixels * 0.86f).toInt().coerceAtMost(dp(context, 560f))
         window?.apply {
             // Mesmas flags immersive da janela do jogo (SDL): sem isto, as
             // barras de sistema reaparecem por cima do jogo enquanto o
@@ -127,8 +129,6 @@ class QuickSettingsDialog(
                 or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
             setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
             setDimAmount(0.55f)
-            val w = (resources.displayMetrics.widthPixels * 0.86f).toInt()
-                .coerceAtMost(dp(context, 560f))
             setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
         }
     }
@@ -370,6 +370,8 @@ class ExitConfirmDialog(
 
     override fun show() {
         super.show()
+        val metrics = context.resources.displayMetrics
+        val w = (metrics.widthPixels * 0.80f).toInt().coerceAtMost(dp(context, 480f))
         window?.apply {
             // Mesmas flags immersive da janela do jogo (SDL) — ver QuickSettingsDialog.
             decorView?.systemUiVisibility = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -380,8 +382,6 @@ class ExitConfirmDialog(
                 or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
             setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
             setDimAmount(0.55f)
-            val w = (resources.displayMetrics.widthPixels * 0.80f).toInt()
-                .coerceAtMost(dp(context, 480f))
             setLayout(w, WindowManager.LayoutParams.WRAP_CONTENT)
         }
     }
