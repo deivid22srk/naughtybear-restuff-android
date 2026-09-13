@@ -69,6 +69,11 @@ REXCVAR_DEFINE_BOOL(use_native_renderer, true, "Renderer",
                     "xenos GPU emulation plugin.");
 REXCVAR_DECLARE(bool, use_translated_shaders);  // defined in native_backend_vk.cpp
 REXCVAR_DECLARE(bool, tex_dump);                // defined in renderer/texture_mods.cpp
+// ANDROID PORT (fps_cap ao vivo): definido em hooks.cpp. O pacing do present
+// thread (abaixo) e o limiter de software do on_swap leem este cvar POR
+// ITERAÇÃO — o painel de 4 dedos o reescreve via JNI (nativeSetFpsCap) sem
+// reiniciar o jogo. Mesma .so → o símbolo do storage resolve no link.
+REXCVAR_DECLARE(int32_t, fps_cap);  // defined in hooks.cpp
 
 namespace restuff::native { uint64_t CurrentPsHashForDebug(); }
 
@@ -1893,8 +1898,30 @@ void NativeVulkanGraphicsSystem::PresentThreadMain() {
       if (s_legacy_sleep) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
       } else {
-        constexpr auto kBudget = std::chrono::microseconds(16667);
-        const auto target = frame_start + kBudget;
+        // ANDROID PORT (fps_cap): o orçamento de pacing vem do CVAR fps_cap,
+        // lido A CADA iteração (mudanças ao vivo do painel de 4 dedos via JNI
+        // aplicam sem reiniciar). O 16667 hardcoded era o orçamento de 60Hz —
+        // o present thread apresentava a 60Hz sempre que o guest tinha frame
+        // novo, INDEPENDENTE do fps_cap do restuff.toml: o limitador só
+        // existia no lado do guest (on_swap) e a taxa de vkQueuePresentKHR
+        // (o que o contador de FPS mede) nunca viu o cap.
+        //   cap > 0  → pace para 1/cap (chips 30/60/90/120 do painel)
+        //   cap = 0  → sem pacing extra ("Ilimitado"): o loop continua preso
+        //              ao has_new (só apresenta frame novo do guest) e o FIFO
+        //              do swapchain alinha ao vsync do painel — o spin do
+        //              M3.134 era o presentar INCONDICIONAL, que o s_pace60
+        //              já elimina por padrão.
+        // O guest-side limiter (on_swap) continua existindo e lendo o mesmo
+        // cvar: quando eficaz poupa CPU/bateria (o guest deixa de renderizar
+        // acima do cap); este pacing garante a taxa APARENTE de qualquer
+        // forma (frames extra do guest são consumidos/descartados pelo
+        // mailbox do presenter).
+        const int cap = REXCVAR_GET(fps_cap);
+        const auto target = frame_start +
+            (cap > 0
+                 ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                       std::chrono::microseconds(1000000 / cap))
+                 : std::chrono::steady_clock::duration(0));
         const auto now2 = std::chrono::steady_clock::now();
 #ifdef _WIN32
         // M3.298: Windows/Wine sleeps overshoot even at 1ms timer resolution;

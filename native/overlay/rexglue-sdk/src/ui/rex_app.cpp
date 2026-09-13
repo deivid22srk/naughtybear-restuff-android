@@ -43,6 +43,8 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <string_view>
 
@@ -50,6 +52,12 @@ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
                       "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
                       "GPU emulation")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+// ANDROID PORT (fps_cap ao vivo): espelho escrito pelo JNI
+// nativeSetFpsCap (android_main.cpp) quando o usuário troca o chip de FPS
+// no painel de 4 dedos. Declarado AQUI (não num header) porque só este
+// ponto precisa dele — re-após o LoadConfig abaixo.
+extern "C" std::atomic<int32_t> g_rexrestuff_live_fps_cap;
 
 namespace rex {
 
@@ -156,6 +164,17 @@ bool ReXApp::SetupEnvironment() {
   // Load config FIRST so log cvars have final values
   if (std::filesystem::exists(config_path_))
     rex::cvar::LoadConfig(config_path_);
+
+  // ANDROID PORT (fps_cap ao vivo): o toml foi gerado pelo GameActivity
+  // ANTES do boot; se o usuário trocou o chip de FPS no painel de 4 dedos
+  // durante a subida do motor, o LoadConfig acima acabou de pisar na
+  // escolha com o valor antigo. Re-aplica o espelho escrito pelo JNI.
+  if (const int32_t live_cap = g_rexrestuff_live_fps_cap.load(std::memory_order_relaxed);
+      live_cap >= 0) {
+    rex::cvar::SetFlagByName("fps_cap", std::to_string(live_cap));
+    REXLOG_INFO("ANDROID PORT: fps_cap re-aplicado ao vivo ({}) sobre o valor do toml",
+                live_cap);
+  }
 
   // Late-phase logging
   std::string log_file_cvar = REXCVAR_GET(log_file);

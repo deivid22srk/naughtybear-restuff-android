@@ -41,6 +41,17 @@ object NativeBridge {
     external fun nativeGetPresentCount(): Long
 
     /**
+     * Limite de FPS ao vivo (painel de 4 dedos): escreve no cvar `fps_cap`
+     * do motor — o mesmo que o limiter de software do guest (on_swap) e o
+     * pacing do present thread leem por frame/iteração. Aplica na hora, sem
+     * reiniciar o jogo.
+     *
+     * @param fps 0 = ilimitado; 30/60/90/120 = cap em quadros por segundo
+     *            (limitado a 240 pelo validador do cvar)
+     */
+    external fun nativeSetFpsCap(fps: Int)
+
+    /**
      * Envia o estado consolidado do gamepad virtual (overlay) ao SDL virtual
      * joystick P1. Chamado a cada frame de toque (throttled pelo overlay).
      *

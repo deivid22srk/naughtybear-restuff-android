@@ -1,5 +1,6 @@
 package com.deivid22srk.restuff.game
 
+import android.content.pm.ActivityInfo
 import android.os.Environment
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -40,6 +41,16 @@ class GameActivity : SDLActivity() {
 
     /** Gesto de 4 dedos capturado: o resto do fluxo é engolido até soltarem. */
     private var menuGestureCaptured = false
+
+    /**
+     * Ajustes do painel ainda não persistidos (debounce): gravados no
+     * fechamento do diálogo OU no [onStop] — se o processo morrer com o
+     * painel aberto (home + kill do LMK), o que foi mexido ao vivo sobrevive.
+     */
+    private var pendingQuickSettings: PortSettings? = null
+
+    /** Último cap enviado ao motor — evita JNI+log a cada tick de slider. */
+    private var lastAppliedFpsCap = Int.MIN_VALUE
 
     private companion object {
         /** Nº de dedos simultâneos que abre o painel de ajustes rápidos. */
@@ -194,6 +205,31 @@ class GameActivity : SDLActivity() {
         return applicationInfo.nativeLibraryDir + "/librestuff.so"
     }
 
+    /**
+     * TRAVA DE LANDSCAPE (bug reportado: o jogo girava para portrait).
+     *
+     * O window_sdl.cpp do SDK cria a janela com SDL_WINDOW_RESIZABLE e SEM
+     * hint de orientação — o backend Android do SDL então chama
+     * setOrientation(w, h, resizable=true, hint="") via JNI, que cai em
+     * setOrientationBis → SCREEN_ORIENTATION_FULL_USER: o
+     * setRequestedOrientation DESTRÓI o lock `sensorLandscape` do manifest em
+     * runtime e a activity aceita qualquer rotação (portrait incluído).
+     *
+     * O jogo é 16:9 (1280x720) e o gamepad virtual é desenhado em coordenadas
+     * de landscape — portrait não é um modo jogável, é um acidente. Este
+     * override neutraliza TODA chamada do SDL: o jogo fica nas duas
+     * orientações LANDSCAPE (normal/invertida, respeitando o sensor), o
+     * launcher (MainActivity, sem screenOrientation no manifest) continua
+     * livre para portrait/landscape.
+     */
+    override fun setOrientationBis(w: Int, h: Int, resizable: Boolean, hint: String?) {
+        // O SDL chama isto da thread SDL_main (JNI): posta para a main thread
+        // (executa inline quando já estamos nela).
+        runOnUiThread {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
+
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         NativeBridge.ensureLoaded()
@@ -224,9 +260,19 @@ class GameActivity : SDLActivity() {
         // direito, lendo os presents Vulkan REAIS via JNI — ativada nas
         // Configurações, no painel de 4 dedos, ou aqui por padrão. Não
         // consome toques.
-        if (settings.showFpsCounter) {
-            setFpsCounterVisible(true)
-        }
+        //
+        // PRIME do cvar fps_cap (bug de sessão no mesmo processo): a escrita
+        // ao vivo via SetFlagByName carimba source=kRuntime no registry da
+        // .so, que SOBREVIVE ao relaunch da GameActivity (singleTask +
+        // statics). Sem isto, uma troca de limite feita nas Configurações
+        // entre duas sessões era silenciosamente ignorada: o LoadConfig do
+        // toml (kConfig) perde por precedência para o kRuntime da sessão
+        // anterior, e o espelho g_rexrestuff_live_fps_cap re-aplicava o
+        // valor ANTIGO — motor a 30fps com prefs/painel mostrando 120, e o
+        // chip "120" já selecionado não enviava nada. Reenviar o valor
+        // fresco das prefs AQUI renova o kRuntime a cada sessão: prefs,
+        // toml, espelho e motor sempre concordam no boot.
+        applyOverlaySettings(settings)
     }
 
     override fun onDestroy() {
@@ -239,6 +285,23 @@ class GameActivity : SDLActivity() {
         exitDialog?.dismiss()
         exitDialog = null
         super.onDestroy()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Painel aberto + processo morto em background: os ajustes ao vivo
+        // sobrevivem (o dismiss pode nunca rodar).
+        flushPendingQuickSettings()
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        // Belt-and-suspenders do prime do onCreate: hoje não há rota até as
+        // Configurações sem FINALIZAR esta activity (o exit confirm encerra),
+        // mas se algum dia houver (multi-window, intent externa), o cvar
+        // volta a refletir as prefs ao voltar do background. No-op quando
+        // nada mudou (gate lastAppliedFpsCap + prefs já gravadas no onStop).
+        runCatching { applyOverlaySettings(PortSettingsRepository(this).load()) }
     }
 
     // ------------------------------------------------------------------
@@ -350,14 +413,29 @@ class GameActivity : SDLActivity() {
             context = this,
             initial = settings,
             onChange = { updated ->
+                // AO VIVO: overlay/FPS/limite de FPS aplicam na hora (o jogo
+                // continua rodando atrás do painel).
                 applyOverlaySettings(updated)
-                PortSettingsRepository(this).save(updated)
+                pendingQuickSettings = updated
             },
             onExitRequested = { showExitConfirm() },
         )
         quickDialog = dialog
-        dialog.setOnDismissListener { if (quickDialog === dialog) quickDialog = null }
+        dialog.setOnDismissListener {
+            if (quickDialog === dialog) quickDialog = null
+            // Persistência com debounce: NÃO gravamos a cada tick do slider
+            // (era 1 SharedPreferences.apply() por pixel arrastado) — uma
+            // única gravação no fechamento, só se algo mudou de fato.
+            flushPendingQuickSettings()
+        }
         dialog.show()
+    }
+
+    /** Grava os ajustes pendentes do painel (idempotente). */
+    private fun flushPendingQuickSettings() {
+        val pending = pendingQuickSettings ?: return
+        pendingQuickSettings = null
+        runCatching { PortSettingsRepository(this).save(pending) }
     }
 
     private fun showExitConfirm() {
@@ -383,6 +461,17 @@ class GameActivity : SDLActivity() {
             pad.visibility = if (s.showOverlayControls) View.VISIBLE else View.GONE
         }
         setFpsCounterVisible(s.showFpsCounter)
+        // Limite de FPS ao vivo: mesmo cvar fps_cap que o restuff.toml carrega
+        // no boot — o present thread e o limiter do guest leem por iteração.
+        // Gate: só cruza o JNI quando o cap MUDA (arrastar slider de opacidade
+        // não precisa re-enviar o mesmo valor + linha de log).
+        val cap = s.fpsLimit.fps
+        if (cap != lastAppliedFpsCap) {
+            lastAppliedFpsCap = cap
+            if (NativeBridge.loaded) {
+                runCatching { NativeBridge.nativeSetFpsCap(cap) }
+            }
+        }
     }
 
     private fun setFpsCounterVisible(visible: Boolean) {

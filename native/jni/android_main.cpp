@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gamepad.h>
@@ -334,6 +335,53 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_deivid22srk_restuff_game_NativeBridge_nativeGetPresentCount(JNIEnv*, jclass) {
   return static_cast<jlong>(
       g_rexrestuff_vk_present_count.load(std::memory_order_relaxed));
+}
+
+// ----------------------------------------------------------------------
+// Limite de FPS ao vivo — painel de ajustes rápidos (4 dedos).
+//
+// O fps_cap era boot-only (restuff.toml → cvar::LoadConfig): o usuário
+// trocava 30/60/90/120 nas Configurações e só via efeito no PRÓXIMO boot.
+// O cvar é o ponto único de verdade — o limiter de software do on_swap
+// (hooks.cpp) e o pacing do present thread (native_vk.cpp) o leem POR
+// ITERAÇÃO/FRAME — então escrever aqui aplica na hora, sem reiniciar:
+//   - cap > 0: present thread paceia para 1/cap (a taxa de
+//     vkQueuePresentKHR, que o contador de FPS mede, fica limitada);
+//   - cap = 0: "Ilimitado" (has_new + FIFO/vsync continuam limitando).
+// A persistência segue pelo PortSettings (mesma chave das Configurações,
+// gravada no fechamento do painel) → restuff.toml no próximo boot.
+//
+// THREADING: a escrita vai por rex::cvar::SetFlagByName — registry com
+// mutex, validação de range/validator e callbacks — em vez de atribuir o
+// storage direto. Os leitores (present thread, thread de render do guest)
+// leem o int32 cru por iteração: palavra alinhada de 4 bytes no arm64 não
+// sofre tearing e os loops têm chamadas opacas (sleep_for, funções
+// externas) que forçam o re-load — o MESMO padrão que o SDK usa para os
+// cvars lidos por-frame em outras threads (vsync worker lê REXCVAR_GET
+// (vsync) por ms). É a convenção do código base, documentada aqui.
+//
+// Definido em hooks.cpp, mesma librestuff.so — o declare resolve no link.
+// ----------------------------------------------------------------------
+REXCVAR_DECLARE(int32_t, fps_cap);
+
+// Espelho "escrito ao vivo" do cap: o toml foi gerado no getArguments()
+// ANTES do boot; se o usuário trocar o chip enquanto o motor ainda sobe,
+// o cvar::LoadConfig (dentro do ReXApp::SetupEnvironment) pisaria na
+// escolha com o valor antigo. O rex_app.cpp re-aplica este espelho logo
+// após o LoadConfig — fecha a janela de corrida do boot.
+extern "C" std::atomic<int32_t> g_rexrestuff_live_fps_cap{-1};
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_deivid22srk_restuff_game_NativeBridge_nativeSetFpsCap(JNIEnv*, jclass, jint fps) {
+  // Snap para o domínio do validador do cvar (hooks.cpp): n == 0 ou
+  // 20 <= n <= 240 — valores 1..19 seriam REJEITADOS pelo SetFlagByName e
+  // o cap ficaria com o valor antigo enquanto o Kotlin acha que mudou.
+  // (Os chips só mandam 0/30/60/90/120; isto é blindagem.)
+  int v = fps < 0 ? 0 : (fps > 240 ? 240 : fps);
+  if (v > 0 && v < 20) v = 20;
+  g_rexrestuff_live_fps_cap.store(v, std::memory_order_relaxed);
+  const bool ok = rex::cvar::SetFlagByName("fps_cap", std::to_string(v));
+  ALOG("fps_cap ao vivo -> %d (%s)", v, ok ? "ok" : "rejeitado pelo validador");
 }
 
 // ----------------------------------------------------------------------
