@@ -336,7 +336,10 @@ object GpuDriverManager {
                 )
             }
         }
-        activeFile(context).writeText("id=$id\nlib=${driver.libPath}\n")
+        // [evidência] mesmo bug do setActiveVortek: sem mkdirs(), o writeText
+        // lançava FileNotFoundException (ENOENT) em <files>/drivers/active.txt
+        // quando nenhum driver havia sido importado ainda.
+        writeActiveFile(context, "id=$id\nlib=${driver.libPath}\n")
     }
 
     /** Volta para o driver Vulkan do sistema (remove active.txt). */
@@ -407,7 +410,37 @@ object GpuDriverManager {
                 )
             }
         }
-        activeFile(context).writeText("id=$VORTEK_DRIVER_ID\nlib=${so.absolutePath}\n")
+        // [evidência] fix do ENOENT reportado ao selecionar Vortek: a camada
+        // é embutida no APK (não passa pelo importFromZip, que é quem cria
+        // <files>/drivers/), então em instalação limpa o diretório não
+        // existia e activeFile().writeText() falhava com
+        // "/data/user/0/.../files/drivers/active.txt: open failed: ENOENT".
+        writeActiveFile(
+            context,
+            "id=$VORTEK_DRIVER_ID\nlib=${so.absolutePath}\n"
+        )
+    }
+
+    /**
+     * Persiste o active.txt garantindo o diretório <files>/drivers e
+     * convertendo falhas de E/S em [DriverImportException] com mensagem
+     * amigável (o usuário não deveria ver caminhos/exceções cruas).
+     */
+    private fun writeActiveFile(context: Context, content: String) {
+        val dir = driversDir(context)
+        if (!dir.isDirectory && !dir.mkdirs()) {
+            throw DriverImportException(
+                "Não foi possível criar o diretório de drivers (${dir.name}) — " +
+                    "verifique o espaço livre e tente novamente."
+            )
+        }
+        try {
+            activeFile(context).writeText(content)
+        } catch (e: IOException) {
+            throw DriverImportException(
+                "Falha ao salvar a seleção de driver: ${e.message ?: "erro de E/S"}"
+            )
+        }
     }
 
     // ----------------------------------------------------------------------
