@@ -51,8 +51,9 @@ private const val COL_THUMB_OFF = 0xFF6A6E7A.toInt()
 private fun dp(ctx: Context, v: Float): Int =
     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, ctx.resources.displayMetrics).toInt()
 
-private fun sp(ctx: Context, v: Float): Float =
-    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, ctx.resources.displayMetrics)
+// Nota: tamanhos de texto são passados como SP cru em `textSize = Xf`
+// (TextView.setTextSize(Float) interpreta o valor como SP) — nunca como px
+// convertido via applyDimension, que seria escalado DUAS vezes pelo sistema.
 
 private fun cardBg(ctx: Context): GradientDrawable = GradientDrawable().apply {
     shape = GradientDrawable.RECTANGLE
@@ -81,7 +82,7 @@ private fun hairline(ctx: Context): View = View(ctx).apply {
 private fun sectionLabel(ctx: Context, text: String): TextView = TextView(ctx).apply {
     this.text = text
     setTextColor(COL_SECTION)
-    textSize = sp(ctx, 11f)
+    textSize = 11f
     letterSpacing = 0.14f
     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
     layoutParams = LinearLayout.LayoutParams(
@@ -115,6 +116,15 @@ class QuickSettingsDialog(
     override fun show() {
         super.show()
         window?.apply {
+            // Mesmas flags immersive da janela do jogo (SDL): sem isto, as
+            // barras de sistema reaparecem por cima do jogo enquanto o
+            // painel estiver aberto.
+            decorView?.systemUiVisibility = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
             setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
             setDimAmount(0.55f)
             val w = (resources.displayMetrics.widthPixels * 0.86f).toInt()
@@ -140,14 +150,14 @@ class QuickSettingsDialog(
         root.addView(TextView(c).apply {
             text = "AJUSTES RÁPIDOS"
             setTextColor(COL_AMBER)
-            textSize = sp(c, 15f)
+            textSize = 15f
             letterSpacing = 0.10f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         })
         root.addView(TextView(c).apply {
             text = "Toque com 4 dedos em qualquer lugar para abrir"
             setTextColor(COL_TEXT_DIM)
-            textSize = sp(c, 12f)
+            textSize = 12f
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(c, 4f) }
@@ -198,7 +208,7 @@ class QuickSettingsDialog(
             text = "Voltar ao jogo"
             gravity = Gravity.CENTER
             setTextColor(0xFF141006.toInt())
-            textSize = sp(c, 14f)
+            textSize = 14f
             letterSpacing = 0.02f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             background = pill(c, COL_AMBER)
@@ -214,8 +224,10 @@ class QuickSettingsDialog(
             }
             text = "Sair para a tela inicial"
             setTextColor(COL_TEXT_DIM)
-            textSize = sp(c, 12f)
-            setPadding(dp(c, 10f), dp(c, 8f), dp(c, 10f), dp(c, 8f))
+            textSize = 12f
+            minHeight = dp(c, 48f)
+            gravity = Gravity.CENTER
+            setPadding(dp(c, 10f), dp(c, 14f), dp(c, 10f), dp(c, 14f))
             setOnClickListener {
                 dismiss()
                 onExitRequested()
@@ -237,13 +249,13 @@ class QuickSettingsDialog(
         val labelView = TextView(c).apply {
             text = label
             setTextColor(COL_TEXT)
-            textSize = sp(c, 14f)
+            textSize = 14f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
         val subtitleView = TextView(c).apply {
             text = subtitle
             setTextColor(COL_TEXT_DIM)
-            textSize = sp(c, 12f)
+            textSize = 12f
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(c, 2f) }
@@ -292,7 +304,7 @@ class QuickSettingsDialog(
         val valueView = TextView(c).apply {
             text = "$initialPct%"
             setTextColor(COL_AMBER)
-            textSize = sp(c, 13f)
+            textSize = 13f
             typeface = Typeface.MONOSPACE
         }
         val header = LinearLayout(c).apply {
@@ -300,7 +312,7 @@ class QuickSettingsDialog(
             addView(TextView(c).apply {
                 text = label
                 setTextColor(COL_TEXT)
-                textSize = sp(c, 14f)
+                textSize = 14f
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
@@ -359,6 +371,13 @@ class ExitConfirmDialog(
     override fun show() {
         super.show()
         window?.apply {
+            // Mesmas flags immersive da janela do jogo (SDL) — ver QuickSettingsDialog.
+            decorView?.systemUiVisibility = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
             setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
             setDimAmount(0.55f)
             val w = (resources.displayMetrics.widthPixels * 0.80f).toInt()
@@ -378,13 +397,13 @@ class ExitConfirmDialog(
         root.addView(TextView(c).apply {
             text = "Voltar para a tela inicial?"
             setTextColor(COL_TEXT)
-            textSize = sp(c, 16f)
+            textSize = 16f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         })
         root.addView(TextView(c).apply {
             text = "O jogo será encerrado e você voltará ao menu do port. O progresso não salvo será perdido."
             setTextColor(COL_TEXT_DIM)
-            textSize = sp(c, 13f)
+            textSize = 13f
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 lineHeight = dp(c, 20f)
             }
@@ -406,7 +425,7 @@ class ExitConfirmDialog(
                 text = "Continuar jogando"
                 gravity = Gravity.CENTER
                 setTextColor(COL_AMBER)
-                textSize = sp(c, 13f)
+                textSize = 13f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 background = pill(c, Color.TRANSPARENT, COL_AMBER_DIM)
                 setOnClickListener { dismiss() }
@@ -417,7 +436,7 @@ class ExitConfirmDialog(
                 text = "Voltar"
                 gravity = Gravity.CENTER
                 setTextColor(0xFF141006.toInt())
-                textSize = sp(c, 13f)
+                textSize = 13f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 background = pill(c, COL_AMBER)
                 setOnClickListener {

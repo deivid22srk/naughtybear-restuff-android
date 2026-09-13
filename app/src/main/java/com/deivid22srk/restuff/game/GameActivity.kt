@@ -26,8 +26,10 @@ import java.util.Locale
  * estaticamente — ver [getLibraries] e android_main.cpp.
  *
  * Sobre o RelativeLayout do SDLActivity é adicionado o [VirtualGamepadView]
- * translúcido (P1 virtual); áreas sem botão deixam o toque passar para a
- * superfície SDL (útil para os overlays ImGui do jogo).
+ * translúcido (P1 virtual). DECISÃO de input: quando visível, a view consome
+ * TODOS os toques (o jogo é dirigido por gamepad — pass-through entregaria
+ * o gesto multi-touch inteiro ao SDL e quebraria pressões simultâneas); o
+ * painel de ajustes abre com 4 dedos, detectado aqui no nível da Activity.
  */
 class GameActivity : SDLActivity() {
 
@@ -42,6 +44,14 @@ class GameActivity : SDLActivity() {
     private companion object {
         /** Nº de dedos simultâneos que abre o painel de ajustes rápidos. */
         const val MENU_FINGERS = 4
+
+        /**
+         * Janela p/ o acorde de 4 dedos contar como “tap”: os 4 downs precisam
+         * ocorrer dentro deste intervalo desde o PRIMEIRO dedo do gesto. Uma
+         * “garra” de gameplay (stick preso há segundos + gatilhos depois) tem
+         * downTime antigo e não dispara o painel.
+         */
+        const val MENU_TAP_WINDOW_MS = 400L
     }
 
     /**
@@ -248,6 +258,7 @@ class GameActivity : SDLActivity() {
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (!menuGestureCaptured &&
                     ev.pointerCount >= MENU_FINGERS &&
+                    ev.eventTime - ev.downTime <= MENU_TAP_WINDOW_MS &&
                     noDialogShowing()
                 ) {
                     menuGestureCaptured = true
@@ -287,7 +298,7 @@ class GameActivity : SDLActivity() {
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK && isSystemBackSource(event)) {
-            if (event.action == KeyEvent.ACTION_DOWN) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
                 handleBackRequested()
             }
             return true // consome DOWN e UP (não vai para o SDL)
@@ -295,12 +306,25 @@ class GameActivity : SDLActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    /** Back “do sistema”: barra de navegação/gesto. Exclui mouse (botão
-     * direito emulado) e gamepads físicos — esses seguem para o SDL. */
+    /**
+     * Back “do sistema” (barra de navegação/gesto): fonte teclado ou virtual.
+     * Exclui mouse (botão direito emulado), gamepads, joysticks e dpads
+     * físicos — esses seguem para o SDL como sempre.
+     *
+     * ⚠️ Comparação por BITS DE DISPOSITIVO, sem o bit de CLASSE
+     * (SOURCE_CLASS_BUTTON = 0x1): SOURCE_KEYBOARD (0x101), SOURCE_DPAD
+     * (0x201) e SOURCE_GAMEPAD (0x401) compartilham o bit de classe — mascarar
+     * a fonte inteira classificaria o back do teclado como “gamepad” e o
+     * deixaria escapar para o SDL (o diálogo nunca abriria em vários aparelhos).
+     */
     private fun isSystemBackSource(event: KeyEvent): Boolean {
-        val interactive = InputDevice.SOURCE_MOUSE or InputDevice.SOURCE_GAMEPAD or
-            InputDevice.SOURCE_DPAD or InputDevice.SOURCE_JOYSTICK
-        return (event.source and interactive) == 0
+        val src = event.source
+        val classBit = InputDevice.SOURCE_CLASS_BUTTON
+        val gamepadDeviceBits = (InputDevice.SOURCE_GAMEPAD or
+            InputDevice.SOURCE_JOYSTICK or InputDevice.SOURCE_DPAD) and classBit.inv()
+        val isGamepad = (src and gamepadDeviceBits) != 0
+        val isMouse = (src and InputDevice.SOURCE_CLASS_POINTER) != 0
+        return !isGamepad && !isMouse
     }
 
     override fun onBackPressed() {
