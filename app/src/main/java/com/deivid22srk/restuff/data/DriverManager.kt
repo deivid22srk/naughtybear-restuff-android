@@ -55,8 +55,6 @@ object GpuDriverManager {
 
     fun driversDir(context: Context): File = File(context.filesDir, "drivers")
 
-    fun activeFile(context: Context): File = File(driversDir(context), "active.txt")
-
     private fun driverJson(dir: File): File = File(dir, "driver.json")
 
     // ----------------------------------------------------------------------
@@ -572,6 +570,8 @@ internal object ActiveFileStore {
                     // rename no mesmo diretório é atômico em Linux/Android;
                     // retorno false (não lança) → fallback da escrita direta.
                     target.writeText(content)
+                    // [17-e3] não deixa o tmp órfão no fallback.
+                    tmp.delete()
                 }
             } catch (e: IOException) {
                 tmp.delete()

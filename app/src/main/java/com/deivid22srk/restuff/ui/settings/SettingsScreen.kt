@@ -725,7 +725,10 @@ private fun DriversSection() {
                                 isError = false
                             }
                             .onFailure { vortekErr ->
+                                // [17-e3] message pode ser null em throwable
+                                // não-DriverImportException — fallback curado.
                                 message = vortekErr.message
+                                    ?: "Falha ao ativar o Vortek — tente novamente."
                                 isError = true
                             }
                     }
@@ -757,6 +760,7 @@ private fun DriversSection() {
                             }
                             .onFailure { importMsg ->
                                 message = importMsg.message
+                                    ?: "Falha ao selecionar o driver — tente novamente."
                                 isError = true
                             }
                     }
