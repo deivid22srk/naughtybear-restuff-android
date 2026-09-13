@@ -103,6 +103,12 @@ VkFormat getFallbackFormat(VkFormat format) {
             return VK_FORMAT_A2R10G10B10_UINT_PACK32;
         case VK_FORMAT_A2R10G10B10_SSCALED_PACK32:
             return VK_FORMAT_A2R10G10B10_SINT_PACK32;
+        // 19-e1 #3: irmão simétrico da família PACK32 — barato e a prova de
+        // drift futuro do mapeamento do emulador.
+        case VK_FORMAT_A8B8G8R8_USCALED_PACK32:
+            return VK_FORMAT_A8B8G8R8_UINT_PACK32;
+        case VK_FORMAT_A8B8G8R8_SSCALED_PACK32:
+            return VK_FORMAT_A8B8G8R8_SINT_PACK32;
         default:
             return format;
     }
@@ -302,6 +308,8 @@ int formatIntSignedness(VkFormat format) {
         // negativizaria componentes 512-1023 → geometria espelhada.
         case VK_FORMAT_A2B10G10R10_UINT_PACK32:
         case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+        // 19-e1 #3: idem A8B8G8R8 PACK32.
+        case VK_FORMAT_A8B8G8R8_UINT_PACK32:
             return 0;
         default:
             return 1;
@@ -733,6 +741,9 @@ bool isFormatScaled(VkFormat format) {
         case VK_FORMAT_A2B10G10R10_SSCALED_PACK32:
         case VK_FORMAT_A2R10G10B10_USCALED_PACK32:
         case VK_FORMAT_A2R10G10B10_SSCALED_PACK32:
+        // 19-e1 #3: A8B8G8R8 PACK32 (irmão simétrico).
+        case VK_FORMAT_A8B8G8R8_USCALED_PACK32:
+        case VK_FORMAT_A8B8G8R8_SSCALED_PACK32:
             return true;
         default:
             return false;

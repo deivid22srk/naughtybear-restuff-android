@@ -558,7 +558,8 @@ void vt_handle_vkWaitForFences(VkContext* context) {
     vt_unserialize_vkWaitForFences((VkDevice)&deviceId, &fenceCount, NULL, &waitAll, &timeout, context->inputBuffer, &context->memoryPool);
     VkDevice device = VkObject_fromId(deviceId);
 
-    VkFence fences[fenceCount];
+    // 19-e1 #8: fenceCount==0 → VLA de tamanho zero (UB) — guarda igual à de fds.
+    VkFence fences[fenceCount > 0 ? fenceCount : 1];
     vt_unserialize_vkWaitForFences(VK_NULL_HANDLE, NULL, fences, NULL, NULL, context->inputBuffer, &context->memoryPool);
 
     if (timeout != 0) {
@@ -571,8 +572,11 @@ void vt_handle_vkWaitForFences(VkContext* context) {
         // antecipada de command buffers/semáforos → frames pretos intermitentes).
         for (int i = 0; i < fenceCount; i++) fds[i] = -1;
 
-        bool allExported = fenceCount > 0;
-        for (int i = 0; i < fenceCount; i++) {
+        // 19-e1 #10: send_fds carrega no máx. MAX_FDS (32) — acima disso o
+        // ctrlmsg do servidor transborda e o cliente trunca (MSG_CTRUNC).
+        // Espera server-side direto.
+        bool allExported = fenceCount > 0 && fenceCount <= MAX_FDS;
+        for (int i = 0; allExported && i < fenceCount; i++) {
             VkFenceGetFdInfoKHR getFdInfo = {0};
             getFdInfo.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
             getFdInfo.fence = fences[i];
@@ -595,6 +599,14 @@ void vt_handle_vkWaitForFences(VkContext* context) {
             // realmente falho é raro e antes corrompia o protocolo. Resposta
             // SEM fds — o cliente novo entende numFds==0 + status como
             // "espera concluída no servidor".
+            //
+            // 19-e1 #5 (restrição documentada): enquanto isto bloqueia, o
+            // cliente segura o mutex global em recv_fds — chamadas de OUTRAS
+            // threads (ex.: um vkQueueSubmit que SINALIZARIA a fence) ficam
+            // presas até a espera concluir. Padrão "submit-antes-do-wait"
+            // sequencial (único render thread, como o emulador) está seguro:
+            // o submit já chegou ao servidor antes do wait entrar. NÃO usar
+            // espera bloqueante concorrente com submit em outra thread.
             for (int i = 0; i < fenceCount; i++) {
                 if (fds[i] >= 0) CLOSEFD(fds[i]);
             }

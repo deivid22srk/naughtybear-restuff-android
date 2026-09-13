@@ -25,9 +25,11 @@
 VulkanWrapper vulkanWrapper = {0};
 
 static int g_failures = 0;
+static int g_total = 0;
 
 #define CHECK(cond, name, fmt, actual)                                        \
     do {                                                                      \
+        g_total++;                                                            \
         if (!(cond)) {                                                        \
             printf("FAIL %-46s " fmt "\n", name, actual);                     \
             g_failures++;                                                     \
@@ -48,6 +50,11 @@ int main(void) {
           "G1 A2R10G10B10_USCALED_PACK32 e' SCALED", "%d", 0);
     CHECK(isFormatScaled(VK_FORMAT_A2R10G10B10_SSCALED_PACK32),
           "G1 A2R10G10B10_SSCALED_PACK32 e' SCALED", "%d", 0);
+    /* 19-e1 #3: irmão simétrico A8B8G8R8 PACK32. */
+    CHECK(isFormatScaled(VK_FORMAT_A8B8G8R8_USCALED_PACK32),
+          "G1 A8B8G8R8_USCALED_PACK32 e' SCALED", "%d", 0);
+    CHECK(isFormatScaled(VK_FORMAT_A8B8G8R8_SSCALED_PACK32),
+          "G1 A8B8G8R8_SSCALED_PACK32 e' SCALED", "%d", 0);
 
     /* G2 — legacy (presente no upstream) continua reconhecido. */
     CHECK(isFormatScaled(VK_FORMAT_R8G8B8A8_USCALED),
@@ -84,6 +91,15 @@ int main(void) {
               VK_FORMAT_A2R10G10B10_SINT_PACK32,
           "F1 A2R10G10B10 SSCALED→SINT", "%d",
           (int)getFallbackFormat(VK_FORMAT_A2R10G10B10_SSCALED_PACK32));
+    /* 19-e1 #3: A8B8G8R8 PACK32. */
+    CHECK(getFallbackFormat(VK_FORMAT_A8B8G8R8_USCALED_PACK32) ==
+              VK_FORMAT_A8B8G8R8_UINT_PACK32,
+          "F1 A8B8G8R8 USCALED→UINT", "%d",
+          (int)getFallbackFormat(VK_FORMAT_A8B8G8R8_USCALED_PACK32));
+    CHECK(getFallbackFormat(VK_FORMAT_A8B8G8R8_SSCALED_PACK32) ==
+              VK_FORMAT_A8B8G8R8_SINT_PACK32,
+          "F1 A8B8G8R8 SSCALED→SINT", "%d",
+          (int)getFallbackFormat(VK_FORMAT_A8B8G8R8_SSCALED_PACK32));
 
     /* F2 — fallback legacy intacto. */
     CHECK(getFallbackFormat(VK_FORMAT_R8G8B8A8_USCALED) == VK_FORMAT_R8G8B8A8_UINT,
@@ -109,9 +125,16 @@ int main(void) {
     CHECK(formatIntSignedness(VK_FORMAT_A2R10G10B10_UINT_PACK32) == 0,
           "S1 A2R10G10B10_UINT_PACK32 signedness=0 (UToF)", "%d",
           formatIntSignedness(VK_FORMAT_A2R10G10B10_UINT_PACK32));
+    /* 19-e1 #3: A8B8G8R8 PACK32. */
+    CHECK(formatIntSignedness(VK_FORMAT_A8B8G8R8_UINT_PACK32) == 0,
+          "S1 A8B8G8R8_UINT_PACK32 signedness=0 (UToF)", "%d",
+          formatIntSignedness(VK_FORMAT_A8B8G8R8_UINT_PACK32));
     CHECK(formatIntSignedness(VK_FORMAT_A2B10G10R10_SINT_PACK32) == 1,
           "S1 A2B10G10R10_SINT_PACK32 signedness=1 (SToF)", "%d",
           formatIntSignedness(VK_FORMAT_A2B10G10R10_SINT_PACK32));
+    CHECK(formatIntSignedness(VK_FORMAT_A8B8G8R8_SINT_PACK32) == 1,
+          "S1 A8B8G8R8_SINT_PACK32 signedness=1 (SToF)", "%d",
+          formatIntSignedness(VK_FORMAT_A8B8G8R8_SINT_PACK32));
     CHECK(formatIntSignedness(VK_FORMAT_R8G8B8A8_UINT) == 0,
           "S1 R8G8B8A8_UINT signedness=0 (upstream)", "%d",
           formatIntSignedness(VK_FORMAT_R8G8B8A8_UINT));
@@ -120,9 +143,10 @@ int main(void) {
           formatIntSignedness(VK_FORMAT_R8G8B8A8_SINT));
 
     if (g_failures > 0) {
-        printf("\nFORMAT-CONV: %d FALHA(S)\n", g_failures);
+        printf("\nFORMAT-CONV: %d/%d FALHA(S)\n", g_failures, g_total);
         return 1;
     }
-    printf("\nFORMAT-CONV: 21/21 checagens OK — PACK32 10-10-10-2 coberto\n");
+    printf("\nFORMAT-CONV: %d/%d checagens OK — PACK32 10-10-10-2 + A8B8G8R8 cobertos\n",
+           g_total, g_total);
     return 0;
 }
