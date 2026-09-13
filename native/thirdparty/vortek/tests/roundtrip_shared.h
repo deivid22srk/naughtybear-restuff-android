@@ -35,6 +35,9 @@ extern int rt_client_serialize_create_android_surface(uint64_t instance_id, uint
                                                        uint32_t flags, RtBuffer* out);
 extern int rt_client_serialize_destroy_surface(uint64_t instance_id, uint64_t surface_id,
                                                RtBuffer* out);
+extern int rt_client_serialize_queue_present(uint64_t queue_id, uint64_t swapchain_id,
+                                             uint64_t semaphore_id, uint32_t image_index,
+                                             RtBuffer* out);
 extern int rt_client_unserialize_surface_response(RtBuffer* in, uint64_t* surface_id);
 
 /* ===== TU servidor (roundtrip_server.c) ===== */
@@ -49,6 +52,8 @@ extern int rt_server_parse_create_android_surface(RtBuffer* in, uint64_t* instan
                                                   uint64_t* window, uint32_t* flags);
 extern int rt_server_parse_destroy_surface(RtBuffer* in, uint64_t* instance_id,
                                            uint64_t* surface_id);
+extern int rt_server_parse_queue_present(RtBuffer* in, uint64_t* queue_id, uint64_t* swapchain_id,
+                                         uint64_t* semaphore_id, uint32_t* image_index);
 extern int rt_server_serialize_surface_response(uint64_t surface_handle, RtBuffer* out);
 
 #endif

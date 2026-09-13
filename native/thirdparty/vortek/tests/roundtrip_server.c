@@ -120,3 +120,25 @@ int rt_server_serialize_surface_response(uint64_t surface_handle, RtBuffer* out)
     rt_pool_free(&pool);
     return 0;
 }
+
+int rt_server_parse_queue_present(RtBuffer* in, uint64_t* queue_id, uint64_t* swapchain_id,
+                                  uint64_t* semaphore_id, uint32_t* image_index) {
+    MemoryPool pool;
+    if (rt_pool_init(&pool) != 0) return -1;
+
+    VkPresentInfoKHR presentInfo;
+    memset(&presentInfo, 0, sizeof(presentInfo));
+
+    vt_unserialize_vkQueuePresentKHR((VkQueue)queue_id, &presentInfo, in->data, &pool);
+
+    if (presentInfo.swapchainCount == 1 && presentInfo.pSwapchains) {
+        *swapchain_id = (uint64_t)presentInfo.pSwapchains[0]; // ids = handles do host
+    }
+    if (presentInfo.waitSemaphoreCount == 1 && presentInfo.pWaitSemaphores) {
+        *semaphore_id = (uint64_t)presentInfo.pWaitSemaphores[0];
+    }
+    if (presentInfo.pImageIndices) *image_index = presentInfo.pImageIndices[0];
+
+    rt_pool_free(&pool);
+    return 0;
+}

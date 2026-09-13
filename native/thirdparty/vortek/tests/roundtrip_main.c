@@ -125,10 +125,31 @@ int main(void) {
                  (unsigned long long)surface_id);
     }
 
+    /* T7 — vkQueuePresentKHR (formato estendido do port): queue id no
+     * topo + presentInfo com handles nos arrays. O servidor recebe os
+     * ids (= handles do host) nos membros. */
+    {
+        uint64_t queue_id = 0, swapchain_id = 0, semaphore_id = 0;
+        uint32_t image_index = 0;
+        int rc = rt_client_serialize_queue_present(0x0F0FULL, 0x7A7AULL, 0x8B8BULL,
+                                                   3, &buf);
+        RT_CHECK(rc == 0, "T7 cliente serializa queue present", "rc=%d", rc);
+        rc = rt_server_parse_queue_present(&buf, &queue_id, &swapchain_id,
+                                           &semaphore_id, &image_index);
+        RT_CHECK(rc == 0, "T7 servidor parseia queue present", "rc=%d", rc);
+        RT_CHECK(queue_id == 0x0F0FULL, "T7 queue id", "0x%llx",
+                 (unsigned long long)queue_id);
+        RT_CHECK(swapchain_id == 0x7A7AULL, "T7 swapchain id (ids=handles)", "0x%llx",
+                 (unsigned long long)swapchain_id);
+        RT_CHECK(semaphore_id == 0x8B8BULL, "T7 wait semaphore id", "0x%llx",
+                 (unsigned long long)semaphore_id);
+        RT_CHECK(image_index == 3, "T7 image index", "%u", image_index);
+    }
+
     if (g_failures > 0) {
         printf("\nROUND-TRIP: %d FALHA(S)\n", g_failures);
         return 1;
     }
-    printf("\nROUND-TRIP: 6/6 pares OK — protocolo cliente↔servidor sincronizado\n");
+    printf("\nROUND-TRIP: 7/7 pares OK — protocolo cliente↔servidor sincronizado\n");
     return 0;
 }

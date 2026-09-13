@@ -95,3 +95,35 @@ int rt_client_unserialize_surface_response(RtBuffer* in, uint64_t* surface_id) {
     free(pool.data);
     return 0;
 }
+
+int rt_client_serialize_queue_present(uint64_t queue_id, uint64_t swapchain_id,
+                                      uint64_t semaphore_id, uint32_t image_index,
+                                      RtBuffer* out) {
+    VkObject* queueObject = VkObject_create(VK_OBJECT_TYPE_QUEUE, queue_id);
+    VkObject* swapchainObject = VkObject_create(VK_OBJECT_TYPE_SWAPCHAIN_KHR, swapchain_id);
+    VkObject* semaphoreObject = VkObject_create(VK_OBJECT_TYPE_SEMAPHORE, semaphore_id);
+    if (!queueObject || !swapchainObject || !semaphoreObject) return -1;
+
+    VkSemaphore waitSemaphores[1];
+    waitSemaphores[0] = (VkSemaphore)VkObject_toHandle(semaphoreObject);
+    VkSwapchainKHR swapchains[1];
+    swapchains[0] = (VkSwapchainKHR)VkObject_toHandle(swapchainObject);
+    uint32_t imageIndices[1];
+    imageIndices[0] = image_index;
+
+    VkPresentInfoKHR presentInfo;
+    memset(&presentInfo, 0, sizeof(presentInfo));
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = waitSemaphores;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapchains;
+    presentInfo.pImageIndices = imageIndices;
+    presentInfo.pResults = NULL;
+
+    int bufferSize = vt_sizeof_vkQueuePresentKHR((VkQueue)&queueObject->id, &presentInfo);
+    if (bufferSize <= 0 || bufferSize > RT_MAX_BUFFER) return -1;
+    vt_serialize_vkQueuePresentKHR((VkQueue)&queueObject->id, &presentInfo, out->data);
+    out->size = bufferSize;
+    return 0;
+}
