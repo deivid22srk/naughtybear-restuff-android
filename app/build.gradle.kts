@@ -122,4 +122,9 @@ dependencies {
 
     // DocumentFile — navegação em pastas via Storage Access Framework
     implementation("androidx.documentfile:documentfile:1.0.1")
+
+    // Testes de unidade (JVM puro — sem Robolectric):
+    // ActiveFileStoreTest cobre o fix do ENOENT do Vortek e o self-heal
+    // do reconcile (roda no CI antes do build nativo de ~45min).
+    testImplementation("junit:junit:4.13.2")
 }

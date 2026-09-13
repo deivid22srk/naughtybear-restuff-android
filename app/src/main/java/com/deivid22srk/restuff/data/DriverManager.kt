@@ -367,21 +367,11 @@ object GpuDriverManager {
 
     /** Volta para o driver Vulkan do sistema (remove active.txt). */
     fun clearActive(context: Context) {
-        activeFile(context).delete()
+        ActiveFileStore.clear(driversDir(context))
     }
 
     /** id do driver ativo, ou null se usando o driver do sistema. */
-    fun activeId(context: Context): String? {
-        val f = activeFile(context)
-        if (!f.isFile) return null
-        return f.useLines { lines ->
-            lines.map { it.trim() }
-                .firstOrNull { it.startsWith("id=") }
-                ?.substringAfter('=')
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-        }
-    }
+    fun activeId(context: Context): String? = ActiveFileStore.readId(driversDir(context))
 
     /** Remove um driver importado (e desativa, se era o ativo). */
     fun remove(context: Context, id: String) {
@@ -452,17 +442,9 @@ object GpuDriverManager {
                     "verifique o espaço livre e tente novamente."
             )
         }
-        val target = activeFile(context)
-        val tmp = File(dir, "active.txt.tmp")
         try {
-            tmp.writeText(content)
-            if (!tmp.renameTo(target)) {
-                // rename no mesmo diretório é atômico em Linux/Android; se
-                // ainda assim falhar, escrita direta mantém o fluxo vivo.
-                target.writeText(content)
-            }
+            ActiveFileStore.write(dir, content)
         } catch (e: IOException) {
-            tmp.delete()
             throw DriverImportException(
                 "Falha ao salvar a seleção de driver — verifique o espaço " +
                     "livre e tente novamente."
@@ -481,28 +463,11 @@ object GpuDriverManager {
      * Chamar ao entrar nas Configurações e ANTES de iniciar o jogo
      * (GameActivity.getArguments). Retorna true se regravou o arquivo.
      */
-    fun reconcileActiveVortek(context: Context): Boolean {
-        val f = activeFile(context)
-        if (!f.isFile) return false
-        if (activeId(context) != VORTEK_DRIVER_ID) return false
-        val expected = vortekClientPath(context)
-        // Build sem a camada Vortek: nada a reconciliar — o nativo já cai no
-        // driver do sistema e o motivo aparece no Diagnóstico.
-        if (!expected.isFile) return false
-        val lib = f.useLines { lines ->
-            lines.map { it.trim() }
-                .firstOrNull { it.startsWith("lib=") }
-                ?.substringAfter('=')
-                ?.trim()
-        } ?: return false
-        if (lib == expected.absolutePath) return false
-        return runCatching {
-            writeActiveFile(
-                context,
-                "id=$VORTEK_DRIVER_ID\nlib=${expected.absolutePath}\n"
-            )
-        }.isSuccess
-    }
+    fun reconcileActiveVortek(context: Context): Boolean = ActiveFileStore.reconcile(
+        driversDir(context),
+        vortekClientPath(context),
+        VORTEK_DRIVER_ID,
+    )
 
     // ----------------------------------------------------------------------
     // Diagnóstico do último boot (escrito por vulkan_instance.cpp)
@@ -545,4 +510,99 @@ object GpuDriverManager {
         File(context.filesDir, "last_log_location.txt").takeIf { it.isFile }?.readText()
 
     private const val DEFAULT_BUFFER = 1 shl 16 // 64 KiB
+}
+
+// ----------------------------------------------------------------------
+// Núcleo de persistência do active.txt SEM android.Context — só java.io.File
+// (JVM puro) → testável em unidade SEM Robolectric
+// (app/src/test/java/.../ActiveFileStoreTest.kt, roda no CI antes do build
+// nativo de ~45min). A superfície pública do GpuDriverManager delega aqui.
+// ----------------------------------------------------------------------
+
+/**
+ * Leitura/escrita do arquivo de driver ativo (<files>/drivers/active.txt),
+ * formato `id=<id>\nlib=<caminho absoluto>`.
+ *
+ * Escreve com mkdirs do diretório (fix do ENOENT reportado ao selecionar
+ * Vortek em instalação limpa) + escrita atômica (tmp + rename no mesmo
+ * diretório) + trava de processo (UI e getArguments do jogo podem
+ * concorrer). Leitura tolerante a CRLF, espaços e ordem invertida das
+ * linhas.
+ */
+internal object ActiveFileStore {
+
+    /** Serializa escritas concorrentes (UI + boot do jogo). */
+    private val writeLock = Any()
+
+    fun activeFile(driversDir: File): File = File(driversDir, "active.txt")
+
+    /** id= do active.txt, ou null se arquivo/linha ausentes. */
+    fun readId(driversDir: File): String? = readKey(activeFile(driversDir), "id")
+
+    /** lib= do active.txt, ou null se arquivo/linha ausentes. */
+    fun readLib(driversDir: File): String? = readKey(activeFile(driversDir), "lib")
+
+    private fun readKey(f: File, key: String): String? {
+        if (!f.isFile) return null
+        return f.useLines { lines ->
+            lines.map { it.trim() }
+                .firstOrNull { it.startsWith("$key=") }
+                ?.substringAfter('=')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /**
+     * Persiste o active.txt: cria o diretório se necessário (fix ENOENT),
+     * escreve em tmp e renomeia (atômico no mesmo diretório — leitor
+     * concorrente nunca vê truncado); se o rename falhar, escrita direta
+     * mantém o fluxo vivo. [IOException] sobe para o chamador traduzir.
+     */
+    fun write(driversDir: File, content: String) {
+        if (!driversDir.isDirectory && !driversDir.mkdirs()) {
+            throw IOException("mkdirs failed: ${driversDir.name}")
+        }
+        val target = activeFile(driversDir)
+        val tmp = File(driversDir, "active.txt.tmp")
+        synchronized(writeLock) {
+            try {
+                tmp.writeText(content)
+                if (!tmp.renameTo(target)) {
+                    // rename no mesmo diretório é atômico em Linux/Android;
+                    // retorno false (não lança) → fallback da escrita direta.
+                    target.writeText(content)
+                }
+            } catch (e: IOException) {
+                tmp.delete()
+                throw e
+            }
+        }
+    }
+
+    /** Remove o active.txt (idempotente — arquivo ausente é no-op). */
+    fun clear(driversDir: File) {
+        synchronized(writeLock) { activeFile(driversDir).delete() }
+    }
+
+    /**
+     * Self-heal Vortek: regrava o active.txt quando id=vortek e o caminho
+     * do cliente difere do esperado (app atualizado — nativeLibraryDir muda
+     * a cada reinstalação) OU está ausente (resíduo de escrita truncada
+     * pré-fix / edição manual — review 17-e2). Não mexe em driver Turnip,
+     * build sem Vortek ou arquivo ausente. Retorna true se regravou.
+     */
+    fun reconcile(driversDir: File, expectedClient: File, vortekId: String): Boolean {
+        // Build sem a camada Vortek: nada a reconciliar — o nativo já cai no
+        // driver do sistema e o motivo aparece no Diagnóstico.
+        if (!expectedClient.isFile) return false
+        val id = readId(driversDir) ?: return false
+        if (id != vortekId) return false
+        val lib = readLib(driversDir)
+        if (lib == expectedClient.absolutePath) return false
+        return runCatching {
+            write(driversDir, "id=$vortekId\nlib=${expectedClient.absolutePath}\n")
+            true
+        }.getOrDefault(false)
+    }
 }

@@ -50,6 +50,16 @@ jobs:
       - name: Apply port overlays
         run: bash scripts/apply_overlays.sh
 
+      # Testes de unidade Kotlin (avaliação 17-e2): o fix do ENOENT do
+      # Vortek (diretório files/drivers nunca criado no fluxo embutido) e o
+      # self-heal do reconcile têm cobertura em JVM puro, sem Robolectric —
+      # falha em segundos, ANTES do build nativo de ~45min. Também compila
+      # todo o Kotlin do app, pegando erro de compilação cedo.
+      - name: Kotlin unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest
+
       - name: Host codegen (rexglue CLI + Default.xex)
         run: bash scripts/build_host_codegen.sh
 
