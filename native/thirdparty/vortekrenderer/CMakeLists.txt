@@ -23,6 +23,9 @@ include_directories(winlator/include)
 include_directories(${ADRENOTOOLS_INCLUDE_DIR})
 
 add_library(vortekrenderer SHARED
+            # Compat: AHardwareBuffer_getFd (no upstream vive na lib winlator
+            # completa, que não vendoramos — ver src/winlator_compat.c)
+            src/winlator_compat.c
             src/main.c
             src/vk_object.c
             src/request_handler.c

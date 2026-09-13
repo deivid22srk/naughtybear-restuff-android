@@ -52,3 +52,8 @@ an **android-surface passthrough mode**:
 
 The X11/XWindow code paths still compile but are unreachable in this app
 (no XServer, no X11 windows) — kept for upstream-merge friendliness.
+6. **`src/winlator_compat.c`** (novo) — `AHardwareBuffer_getFd`: upstream
+   links the full `winlator` native lib (where the function lives in
+   `gpu_image.c`); we vendor only what vortekrenderer needs, so the single
+   missing symbol is provided here (same implementation, LGPL-2.1). Found
+   by CI linking libvortekrenderer.so.
