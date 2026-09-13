@@ -615,6 +615,21 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   if (instance_create_result != VK_SUCCESS) {
     REXLOG_ERROR("Failed to create a Vulkan instance: {}",
                  vk::to_string(vk::Result(instance_create_result)));
+#if REX_PLATFORM_ANDROID
+    // Port Android (16-e1): com o cliente Vortek ativo, o preflight já passou
+    // mas o SERVIDOR rejeitou a instance (ex.: lista de extensões recusada
+    // pelo driver host). O last_boot.txt não pode continuar dizendo
+    // "custom_ok" — o Diagnóstico tem de refletir a falha real. (Sem retry
+    // automático com o loader do sistema: a rejeição de VK_KHR_surface +
+    // VK_KHR_android_surface não ocorre em driver Android com Vulkan
+    // utilizável — o caminho do sistema falharia pelo mesmo motivo.)
+    if (const char* active_loader = std::getenv("REX_VULKAN_LOADER_PATH");
+        active_loader != nullptr && active_loader[0] != '\0' &&
+        std::strstr(active_loader, "libvulkan_vortek.so") != nullptr) {
+      WriteDriverBootOutcome("custom_failed", active_loader,
+                             "vkCreateInstance rejected by host driver (vortek server)");
+    }
+#endif
     return nullptr;
   }
 

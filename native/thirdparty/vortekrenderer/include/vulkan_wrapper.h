@@ -314,7 +314,7 @@ static inline void loadVulkanInstanceFuncs(VulkanWrapper* vulkanWrapper, VkInsta
 #endif
     vulkanWrapper->vkDestroyInstance = findVulkanInstanceFunc(vulkanWrapper, instance, "vkDestroyInstance");
     // Port Android: carregados sempre — ausência (loader sem VK_KHR_android_surface)
-    // resulta em NULL e o handler devolve VK_ERROR_EXTENSION_MISSING.
+    // resulta em NULL e o handler devolve VK_ERROR_EXTENSION_NOT_PRESENT.
     vulkanWrapper->vkCreateAndroidSurface = findVulkanInstanceFunc(vulkanWrapper, instance, "vkCreateAndroidSurfaceKHR");
     vulkanWrapper->vkDestroySurface = findVulkanInstanceFunc(vulkanWrapper, instance, "vkDestroySurfaceKHR");
     vulkanWrapper->vkEnumeratePhysicalDevices = findVulkanInstanceFunc(vulkanWrapper, instance, "vkEnumeratePhysicalDevices");

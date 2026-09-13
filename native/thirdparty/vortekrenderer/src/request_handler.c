@@ -2003,11 +2003,16 @@ void vt_handle_vkDestroySurfaceKHR(VkContext* context) {
 
 void vt_handle_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkContext* context) {
     uint64_t physicalDeviceId;
-    uint64_t surfaceId;
+    uint64_t surfaceId = 0; // 16-e1: defesa — surface ausente no payload = erro, não lixo
 
     vt_unserialize_vkGetPhysicalDeviceSurfaceCapabilitiesKHR((VkPhysicalDevice)&physicalDeviceId, (VkSurfaceKHR)&surfaceId, NULL, context->inputBuffer, &context->memoryPool);
     VkPhysicalDevice physicalDevice = VkObject_fromId(physicalDeviceId);
     VkSurfaceKHR surface = VkObject_fromId(surfaceId);
+
+    if (!surface) {
+        vt_send(context->clientRing, VK_ERROR_SURFACE_LOST_KHR, NULL, 0);
+        return;
+    }
 
     VkSurfaceCapabilitiesKHR surfaceCapabilities = {0};
     VkResult result = vulkanWrapper.vkGetPhysicalDeviceSurfaceCapabilities(physicalDevice, surface, &surfaceCapabilities);
@@ -2019,12 +2024,17 @@ void vt_handle_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkContext* context) {
 
 void vt_handle_vkGetPhysicalDeviceSurfaceFormatsKHR(VkContext* context) {
     uint64_t physicalDeviceId;
-    uint64_t surfaceId;
+    uint64_t surfaceId = 0; // 16-e1: defesa — surface ausente no payload = erro, não lixo
     uint32_t surfaceFormatCount;
 
     vt_unserialize_vkGetPhysicalDeviceSurfaceFormatsKHR((VkPhysicalDevice)&physicalDeviceId, (VkSurfaceKHR)&surfaceId, &surfaceFormatCount, NULL, context->inputBuffer, &context->memoryPool);
     VkPhysicalDevice physicalDevice = VkObject_fromId(physicalDeviceId);
     VkSurfaceKHR surface = VkObject_fromId(surfaceId);
+
+    if (!surface) {
+        vt_send(context->clientRing, VK_ERROR_SURFACE_LOST_KHR, NULL, 0);
+        return;
+    }
 
     // Protocolo de duas chamadas do Vulkan resolvido nativamente pelo driver:
     // count=0 na primeira (devolve o total), buffer na segunda.
@@ -2038,12 +2048,17 @@ void vt_handle_vkGetPhysicalDeviceSurfaceFormatsKHR(VkContext* context) {
 
 void vt_handle_vkGetPhysicalDeviceSurfacePresentModesKHR(VkContext* context) {
     uint64_t physicalDeviceId;
-    uint64_t surfaceId;
+    uint64_t surfaceId = 0; // 16-e1: defesa — surface ausente no payload = erro, não lixo
     uint32_t presentModeCount;
 
     vt_unserialize_vkGetPhysicalDeviceSurfacePresentModesKHR((VkPhysicalDevice)&physicalDeviceId, (VkSurfaceKHR)&surfaceId, &presentModeCount, NULL, context->inputBuffer, &context->memoryPool);
     VkPhysicalDevice physicalDevice = VkObject_fromId(physicalDeviceId);
     VkSurfaceKHR surface = VkObject_fromId(surfaceId);
+
+    if (!surface) {
+        vt_send(context->clientRing, VK_ERROR_SURFACE_LOST_KHR, NULL, 0);
+        return;
+    }
 
     VkPresentModeKHR* presentModes = presentModeCount > 0 ? vt_alloc(&context->memoryPool, presentModeCount * sizeof(VkPresentModeKHR)) : NULL;
     VkResult result = vulkanWrapper.vkGetPhysicalDeviceSurfacePresentModes(physicalDevice, surface, &presentModeCount, presentModes);
@@ -2064,6 +2079,11 @@ void vt_handle_vkCreateSwapchainKHR(VkContext* context) {
 
     // O id da superfície serializado pelo cliente É o handle real do host —
     // basta assumi-lo (mesma convenção de ids de todos os demais objetos).
+    if (!surfaceId) {
+        VT_SERIALIZE_CMD(VkSwapchainKHR, (VkSwapchainKHR)VK_NULL_HANDLE);
+        vt_send(context->clientRing, VK_ERROR_SURFACE_LOST_KHR, outputBuffer, bufferSize);
+        return;
+    }
     createInfo.surface = (VkSurfaceKHR)surfaceId;
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;

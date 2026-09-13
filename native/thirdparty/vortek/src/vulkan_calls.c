@@ -1828,8 +1828,14 @@ VkResult vt_call_vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physicalD
     VT_CALL_LOCK();
     if (!pSurfaceFormats) *pSurfaceFormatCount = 0;
     VkObject* physicalDeviceObject = VkObject_fromHandle(physicalDevice);
+    // Port Android: a surface agora é serializada — o servidor consulta a
+    // VkSurfaceKHR REAL do host (android-surface passthrough). No upstream
+    // (modo X11) o cliente enviava NULL porque o servidor fabricava os
+    // formatos sem precisar da surface — mudar só o servidor deixaria o
+    // handler lendo um handle nunca escrito (uninitialized).
+    VkObject* surfaceObject = VkObject_fromHandle(surface);
 
-    VT_SERIALIZE_CMD(vkGetPhysicalDeviceSurfaceFormatsKHR, (VkPhysicalDevice)&physicalDeviceObject->id, NULL, pSurfaceFormatCount, NULL);
+    VT_SERIALIZE_CMD(vkGetPhysicalDeviceSurfaceFormatsKHR, (VkPhysicalDevice)&physicalDeviceObject->id, (VkSurfaceKHR)&surfaceObject->id, pSurfaceFormatCount, NULL);
     VT_SEND_CHECKED(REQUEST_CODE_VK_GET_PHYSICAL_DEVICE_SURFACE_FORMATS_KHR, VT_RETURN);
     VT_RECV_CHECKED(VT_RETURN);
 
@@ -1842,8 +1848,11 @@ VkResult vt_call_vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice phys
     VT_CALL_LOCK();
     if (!pPresentModes) *pPresentModeCount = 0;
     VkObject* physicalDeviceObject = VkObject_fromHandle(physicalDevice);
+    // Port Android: idem vkGetPhysicalDeviceSurfaceFormatsKHR — a surface é
+    // necessária para a consulta real no driver do host.
+    VkObject* surfaceObject = VkObject_fromHandle(surface);
 
-    VT_SERIALIZE_CMD(vkGetPhysicalDeviceSurfacePresentModesKHR, (VkPhysicalDevice)&physicalDeviceObject->id, NULL, pPresentModeCount, NULL);
+    VT_SERIALIZE_CMD(vkGetPhysicalDeviceSurfacePresentModesKHR, (VkPhysicalDevice)&physicalDeviceObject->id, (VkSurfaceKHR)&surfaceObject->id, pPresentModeCount, NULL);
     VT_SEND_CHECKED(REQUEST_CODE_VK_GET_PHYSICAL_DEVICE_SURFACE_PRESENT_MODES_KHR, VT_RETURN);
     VT_RECV_CHECKED(VT_RETURN);
 
@@ -2231,8 +2240,14 @@ VkResult vt_call_vkGetDeviceGroupSurfacePresentModesKHR(VkDevice device, VkSurfa
 
 VkResult vt_call_vkAcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* pAcquireInfo, uint32_t* pImageIndex) {
     VT_CALL_LOCK();
- 
-    VT_SERIALIZE_CMD(VkAcquireNextImageInfoKHR, pAcquireInfo);
+    // Port Android: formato FULL-CALL (device + acquireInfo) — o handler do
+    // servidor faz vt_unserialize_vkAcquireNextImage2KHR((VkDevice)&deviceId,
+    // &acquireInfo, ...). No upstream o cliente mandava SÓ o struct e o
+    // servidor (X11) fazia cast direto — mudar só o servidor quebraria o
+    // parse (deviceId/acquireInfo lixo).
+    VkObject* deviceObject = VkObject_fromHandle(device);
+
+    VT_SERIALIZE_CMD(vkAcquireNextImage2KHR, (VkDevice)&deviceObject->id, pAcquireInfo, NULL);
     VT_SEND_CHECKED(REQUEST_CODE_VK_ACQUIRE_NEXT_IMAGE2_KHR, VT_RETURN);
     VT_RECV_CHECKED(VT_RETURN);
 

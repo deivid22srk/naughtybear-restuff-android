@@ -64,6 +64,18 @@ static int g_listenFd = -1;
 static pthread_t g_acceptThread = 0;
 static volatile bool g_serverRunning = false;
 static VkContext* g_serverContext = NULL;
+// 16-e1: guard contra dupla destruição — vortek_server_stop() e a
+// extraDataReaderThread (cliente caiu) podem disputar o mesmo VkContext.
+static pthread_mutex_t g_serverContextMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void destroyServerContextLocked(VkContext* context) {
+    pthread_mutex_lock(&g_serverContextMutex);
+    if (g_serverContext == context) {
+        g_serverContext = NULL;
+        destroyVkContext(NULL, context);
+    }
+    pthread_mutex_unlock(&g_serverContextMutex);
+}
 // Cópia rasa das opções (exposedDeviceExtensions aponta para memória do
 // chamador — que deve ter lifetime estático, ver vortek_server_host.h).
 static VortekServerOptionsC g_serverOptions;
@@ -124,10 +136,7 @@ static void* extraDataReaderThread(void* param) {
     }
 
     // Cliente caiu (engine encerrou): destrói o contexto.
-    if (g_serverContext == context) {
-        g_serverContext = NULL;
-        destroyVkContext(NULL, context);
-    }
+    destroyServerContextLocked(context);
     return NULL;
 }
 
@@ -159,7 +168,9 @@ static void* acceptThread(void* param) {
             close(clientFd);
             continue;
         }
+        pthread_mutex_lock(&g_serverContextMutex);
         g_serverContext = context;
+        pthread_mutex_unlock(&g_serverContextMutex);
 
         pthread_t extraDataThread;
         pthread_create(&extraDataThread, NULL, extraDataReaderThread, context);
@@ -234,10 +245,16 @@ void vortek_server_stop(void) {
         close(g_listenFd);
         g_listenFd = -1;
     }
+    // 16-e1: shutdown à prova de corrida — o mesmo mutex do reader thread;
+    // se o reader já destruiu (cliente caiu antes), g_serverContext é NULL e
+    // nada acontece aqui.
+    pthread_mutex_lock(&g_serverContextMutex);
     if (g_serverContext) {
-        destroyVkContext(NULL, g_serverContext);
+        VkContext* context = g_serverContext;
         g_serverContext = NULL;
+        destroyVkContext(NULL, context);
     }
+    pthread_mutex_unlock(&g_serverContextMutex);
 }
 
 JNIEXPORT jlong JNICALL
