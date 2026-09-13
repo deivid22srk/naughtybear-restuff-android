@@ -2086,6 +2086,17 @@ void vt_handle_vkCreateSwapchainKHR(VkContext* context) {
     }
     createInfo.surface = (VkSurfaceKHR)surfaceId;
 
+    // 18-e1: defesa em profundidade — sem VK_KHR_swapchain no device do
+    // host (ex.: driver exótico) o ponteiro vem NULL do
+    // vkGetDeviceProcAddr: responder erro, nunca chamar NULL (SIGSEGV
+    // pc=0, crash uYKCijUd).
+    if (!vulkanWrapper.vkCreateSwapchain) {
+        println("Vortek: vkCreateSwapchainKHR indisponivel no driver do host (VK_KHR_swapchain nao habilitada?)");
+        VT_SERIALIZE_CMD(VkSwapchainKHR, (VkSwapchainKHR)VK_NULL_HANDLE);
+        vt_send(context->clientRing, VK_ERROR_EXTENSION_NOT_PRESENT, outputBuffer, bufferSize);
+        return;
+    }
+
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkResult result = vulkanWrapper.vkCreateSwapchain(device, &createInfo, NULL, &swapchain);
     if (result == VK_ERROR_DEVICE_LOST) context->status = result;
@@ -2102,6 +2113,11 @@ void vt_handle_vkDestroySwapchainKHR(VkContext* context) {
     VkDevice device = VkObject_fromId(deviceId);
     VkSwapchainKHR swapchain = VkObject_fromId(swapchainId);
 
+    // 18-e1: destroy é fire-and-forget — sem ponteiro, apenas ignora.
+    if (!vulkanWrapper.vkDestroySwapchain) {
+        println("Vortek: vkDestroySwapchainKHR indisponivel no driver do host");
+        return;
+    }
     vulkanWrapper.vkDestroySwapchain(device, swapchain, NULL);
 }
 
@@ -2113,6 +2129,16 @@ void vt_handle_vkGetSwapchainImagesKHR(VkContext* context) {
     vt_unserialize_vkGetSwapchainImagesKHR((VkDevice)&deviceId, (VkSwapchainKHR)&swapchainId, &swapchainImageCount, NULL, context->inputBuffer, &context->memoryPool);
     VkDevice device = VkObject_fromId(deviceId);
     VkSwapchainKHR swapchain = VkObject_fromId(swapchainId);
+
+    // 18-e1: sem entry point no host — devolve o erro no mesmo formato de
+    // resposta que o cliente espera desserializar (count=0, sem imagens).
+    if (!vulkanWrapper.vkGetSwapchainImages) {
+        println("Vortek: vkGetSwapchainImagesKHR indisponivel no driver do host");
+        swapchainImageCount = 0;
+        VT_SERIALIZE_CMD(vkGetSwapchainImagesKHR, NULL, VK_NULL_HANDLE, &swapchainImageCount, NULL);
+        vt_send(context->clientRing, VK_ERROR_EXTENSION_NOT_PRESENT, outputBuffer, bufferSize);
+        return;
+    }
 
     VkImage* swapchainImages = swapchainImageCount > 0 ? vt_alloc(&context->memoryPool, swapchainImageCount * sizeof(VkImage)) : NULL;
     VkResult result = vulkanWrapper.vkGetSwapchainImages(device, swapchain, &swapchainImageCount, swapchainImages);
@@ -2136,6 +2162,13 @@ void vt_handle_vkAcquireNextImageKHR(VkContext* context) {
     VkFence fence = VkObject_fromId(fenceId);
 
     uint32_t imageIndex = 0;
+    // 18-e1: acquire devolve o resultado no próprio status (sem payload) —
+    // basta encaminhar o erro.
+    if (!vulkanWrapper.vkAcquireNextImage) {
+        println("Vortek: vkAcquireNextImageKHR indisponivel no driver do host");
+        vt_send(context->clientRing, VK_ERROR_EXTENSION_NOT_PRESENT, NULL, 0);
+        return;
+    }
     VkResult result = vulkanWrapper.vkAcquireNextImage(device, swapchain, timeout, semaphore, fence, &imageIndex);
     if (result == VK_ERROR_DEVICE_LOST) context->status = result;
 
@@ -2155,6 +2188,12 @@ void vt_handle_vkQueuePresentKHR(VkContext* context) {
 
     // pWaitSemaphores/pSwapchains já chegam como handles reais do host
     // (ids = handles — mesma convenção de todos os objetos).
+    // 18-e1: present é fire-and-forget — sem entry point, apenas loga e
+    // engole (o DEVICE_LOST segue propagando via context->status).
+    if (!vulkanWrapper.vkQueuePresent) {
+        println("Vortek: vkQueuePresentKHR indisponivel no driver do host");
+        return;
+    }
     VkResult result = vulkanWrapper.vkQueuePresent(queue, &presentInfo);
     if (result == VK_ERROR_DEVICE_LOST) context->status = result;
 }
@@ -2475,6 +2514,13 @@ void vt_handle_vkAcquireNextImage2KHR(VkContext* context) {
     // acquireInfo já são handles do host (ids = handles). Engines raramente
     // usam a variante 2 (deviceMask); se usarem com deviceMask > 1 o host
     // decide (mesma semântica do driver real).
+    // 18-e1: guard da família acquire estendido à variante 2 — o fallback
+    // também pode ser NULL no cenário sem VK_KHR_swapchain.
+    if (!vulkanWrapper.vkAcquireNextImage2 && !vulkanWrapper.vkAcquireNextImage) {
+        println("Vortek: vkAcquireNextImage2KHR indisponivel no driver do host");
+        vt_send(context->clientRing, VK_ERROR_EXTENSION_NOT_PRESENT, NULL, 0);
+        return;
+    }
     uint32_t imageIndex = 0;
     VkResult result = vulkanWrapper.vkAcquireNextImage2 ?
         vulkanWrapper.vkAcquireNextImage2(device, &acquireInfo, &imageIndex) :
@@ -2501,19 +2547,32 @@ void vt_handle_vkCmdDispatchBase(VkContext* context) {
 
 void vt_handle_vkGetPhysicalDevicePresentRectanglesKHR(VkContext* context) {
     uint64_t physicalDeviceId;
-    uint64_t windowId;
-    uint32_t rectCount;
+    uint64_t surfaceId = 0;
+    uint32_t rectCount = 0;
 
-    vt_unserialize_vkGetPhysicalDevicePresentRectanglesKHR((VkPhysicalDevice)&physicalDeviceId, (VkSurfaceKHR)&windowId, &rectCount, NULL, context->inputBuffer, &context->memoryPool);
+    vt_unserialize_vkGetPhysicalDevicePresentRectanglesKHR((VkPhysicalDevice)&physicalDeviceId, (VkSurfaceKHR)&surfaceId, &rectCount, NULL, context->inputBuffer, &context->memoryPool);
+    VkPhysicalDevice physicalDevice = VkObject_fromId(physicalDeviceId);
+    VkSurfaceKHR surface = VkObject_fromId(surfaceId);
 
-    VkRect2D* rects = rectCount > 0 ? calloc(1, sizeof(VkPhysicalDeviceGroupProperties)) : NULL;
-    if (rects) getWindowExtent(&context->jmethods, windowId, &rects[0].extent);
-    rectCount = 1;
+    // Port Android: passthrough real (superfície do host, ids = handles) —
+    // substitui o caminho X11 sintético (getWindowExtent + jmethods), que
+    // dereferenciava jmethods.env NULO no modo android-surface e alocava o
+    // tipo errado (VkPhysicalDeviceGroupProperties). 18-e1: guard mantém o
+    // formato de resposta (count + rects) que o cliente desserializa.
+    if (!surface || !vulkanWrapper.vkGetPhysicalDevicePresentRectangles) {
+        println("Vortek: vkGetPhysicalDevicePresentRectanglesKHR indisponivel (surface=%p, func=%p)", (void*)surface, (void*)vulkanWrapper.vkGetPhysicalDevicePresentRectangles);
+        rectCount = 0;
+        VT_SERIALIZE_CMD(vkGetPhysicalDevicePresentRectanglesKHR, VK_NULL_HANDLE, VK_NULL_HANDLE, &rectCount, NULL);
+        vt_send(context->clientRing, surface ? VK_ERROR_EXTENSION_NOT_PRESENT : VK_ERROR_SURFACE_LOST_KHR, outputBuffer, bufferSize);
+        return;
+    }
+
+    VkRect2D* rects = rectCount > 0 ? vt_alloc(&context->memoryPool, rectCount * sizeof(VkRect2D)) : NULL;
+    VkResult result = vulkanWrapper.vkGetPhysicalDevicePresentRectangles(physicalDevice, surface, &rectCount, rects);
+    if (result == VK_ERROR_DEVICE_LOST) context->status = result;
 
     VT_SERIALIZE_CMD(vkGetPhysicalDevicePresentRectanglesKHR, VK_NULL_HANDLE, VK_NULL_HANDLE, &rectCount, rects);
-    vt_send(context->clientRing, VK_SUCCESS, outputBuffer, bufferSize);
-
-    MEMFREE(rects);
+    vt_send(context->clientRing, result, outputBuffer, bufferSize);
 }
 
 void vt_handle_vkCmdSetSampleLocationsEXT(VkContext* context) {
