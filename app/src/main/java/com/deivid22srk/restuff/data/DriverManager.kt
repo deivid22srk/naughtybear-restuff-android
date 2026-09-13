@@ -127,7 +127,11 @@ object GpuDriverManager {
         } catch (e: ZipException) {
             throw DriverImportException("Arquivo .zip inválido ou corrompido.")
         } catch (e: IOException) {
-            throw DriverImportException("Falha ao ler o .zip: ${e.message ?: "erro de E/S"}")
+            // [evidência] review 17-e1 #2: e.message de FileNotFoundException
+            // leva o caminho/URI cru do arquivo — mensagem curada, sem path.
+            throw DriverImportException(
+                "Falha ao ler o .zip selecionado — tente selecioná-lo novamente."
+            )
         }
 
         if (entries.isEmpty() && metaJson == null) {
@@ -228,7 +232,10 @@ object GpuDriverManager {
         } catch (e: Exception) {
             destDir.deleteRecursively()
             if (e is DriverImportException) throw e
-            throw DriverImportException("Falha ao extrair o driver: ${e.message ?: "erro de E/S"}")
+            // [evidência] review 17-e1 #2: idem — sem e.message na UI.
+            throw DriverImportException(
+                "Falha ao extrair o driver — verifique o espaço livre e tente novamente."
+            )
         }
 
         // ---- Persiste metadados ----------------------------------------
@@ -325,21 +332,37 @@ object GpuDriverManager {
                 "Arquivo do driver não existe (${so.name}) — importe-o novamente."
             )
         }
-        so.inputStream().use { input ->
-            val magic = ByteArray(4)
-            if (input.read(magic) < 4 ||
-                !(magic[0] == 0x7F.toByte() && magic[1] == 'E'.code.toByte() &&
-                    magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte())
-            ) {
-                throw DriverImportException(
-                    "Arquivo do driver não é um ELF válido — importe-o novamente."
-                )
-            }
-        }
+        readElfMagicOrThrow(
+            so,
+            "Arquivo do driver não é um ELF válido — importe-o novamente."
+        )
         // [evidência] mesmo bug do setActiveVortek: sem mkdirs(), o writeText
         // lançava FileNotFoundException (ENOENT) em <files>/drivers/active.txt
         // quando nenhum driver havia sido importado ainda.
         writeActiveFile(context, "id=$id\nlib=${driver.libPath}\n")
+    }
+
+    // [evidência] TOCTOU do review 17-e1: so.isFile pode passar e o arquivo
+    // sumir antes do open (limpeza de storage) — IOException crua levava
+    // caminho absoluto para a UI. Leitura do magic centralizada e curada.
+    private fun readElfMagicOrThrow(so: File, invalidElfMessage: String) {
+        try {
+            so.inputStream().use { input ->
+                val magic = ByteArray(4)
+                if (input.read(magic) < 4 ||
+                    !(magic[0] == 0x7F.toByte() && magic[1] == 'E'.code.toByte() &&
+                        magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte())
+                ) {
+                    throw DriverImportException(invalidElfMessage)
+                }
+            }
+        } catch (e: DriverImportException) {
+            throw e
+        } catch (e: IOException) {
+            throw DriverImportException(
+                "Falha ao ler o arquivo do driver — importe-o novamente."
+            )
+        }
     }
 
     /** Volta para o driver Vulkan do sistema (remove active.txt). */
@@ -399,17 +422,10 @@ object GpuDriverManager {
                     "build não inclui a camada de compatibilidade."
             )
         }
-        so.inputStream().use { input ->
-            val magic = ByteArray(4)
-            if (input.read(magic) < 4 ||
-                !(magic[0] == 0x7F.toByte() && magic[1] == 'E'.code.toByte() &&
-                    magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte())
-            ) {
-                throw DriverImportException(
-                    "Cliente Vortek inválido (não é um ELF) — reinstale o app."
-                )
-            }
-        }
+        readElfMagicOrThrow(
+            so,
+            "Cliente Vortek inválido (não é um ELF) — reinstale o app."
+        )
         // [evidência] fix do ENOENT reportado ao selecionar Vortek: a camada
         // é embutida no APK (não passa pelo importFromZip, que é quem cria
         // <files>/drivers/), então em instalação limpa o diretório não
@@ -422,9 +438,11 @@ object GpuDriverManager {
     }
 
     /**
-     * Persiste o active.txt garantindo o diretório <files>/drivers e
-     * convertendo falhas de E/S em [DriverImportException] com mensagem
-     * amigável (o usuário não deveria ver caminhos/exceções cruas).
+     * Persiste o active.txt garantindo o diretório <files>/drivers, com
+     * escrita ATÔMICA (tmp + rename no mesmo diretório: um boot concorrente
+     * do jogo nunca lê o arquivo truncado — review 17-e1 #6) e convertendo
+     * falhas de E/S em [DriverImportException] com mensagem amigável —
+     * sem vazar caminho/exceção crua para a UI (review 17-e1 #2).
      */
     private fun writeActiveFile(context: Context, content: String) {
         val dir = driversDir(context)
@@ -434,13 +452,56 @@ object GpuDriverManager {
                     "verifique o espaço livre e tente novamente."
             )
         }
+        val target = activeFile(context)
+        val tmp = File(dir, "active.txt.tmp")
         try {
-            activeFile(context).writeText(content)
+            tmp.writeText(content)
+            if (!tmp.renameTo(target)) {
+                // rename no mesmo diretório é atômico em Linux/Android; se
+                // ainda assim falhar, escrita direta mantém o fluxo vivo.
+                target.writeText(content)
+            }
         } catch (e: IOException) {
+            tmp.delete()
             throw DriverImportException(
-                "Falha ao salvar a seleção de driver: ${e.message ?: "erro de E/S"}"
+                "Falha ao salvar a seleção de driver — verifique o espaço " +
+                    "livre e tente novamente."
             )
         }
+    }
+
+    /**
+     * Self-heal do active.txt quando o driver ativo é o Vortek (review
+     * 17-e1 #1): o cliente vive em nativeLibraryDir, que MUDA a cada
+     * atualização do app (Android 8+: /data/app/~~<random>/...), e o
+     * active.txt sobrevive à atualização — sem isto, após atualizar o app
+     * o jogo abriria no driver do sistema com o Vortek ainda "selecionado"
+     * nas Configurações (desync silencioso).
+     *
+     * Chamar ao entrar nas Configurações e ANTES de iniciar o jogo
+     * (GameActivity.getArguments). Retorna true se regravou o arquivo.
+     */
+    fun reconcileActiveVortek(context: Context): Boolean {
+        val f = activeFile(context)
+        if (!f.isFile) return false
+        if (activeId(context) != VORTEK_DRIVER_ID) return false
+        val expected = vortekClientPath(context)
+        // Build sem a camada Vortek: nada a reconciliar — o nativo já cai no
+        // driver do sistema e o motivo aparece no Diagnóstico.
+        if (!expected.isFile) return false
+        val lib = f.useLines { lines ->
+            lines.map { it.trim() }
+                .firstOrNull { it.startsWith("lib=") }
+                ?.substringAfter('=')
+                ?.trim()
+        } ?: return false
+        if (lib == expected.absolutePath) return false
+        return runCatching {
+            writeActiveFile(
+                context,
+                "id=$VORTEK_DRIVER_ID\nlib=${expected.absolutePath}\n"
+            )
+        }.isSuccess
     }
 
     // ----------------------------------------------------------------------

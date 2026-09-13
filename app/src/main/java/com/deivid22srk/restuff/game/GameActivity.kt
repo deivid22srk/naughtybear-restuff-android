@@ -4,6 +4,7 @@ import android.os.Environment
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.deivid22srk.restuff.data.GamePaths
+import com.deivid22srk.restuff.data.GpuDriverManager
 import com.deivid22srk.restuff.settings.PortSettingsRepository
 import org.libsdl.app.SDLActivity
 import java.io.File
@@ -64,6 +65,13 @@ class GameActivity : SDLActivity() {
     override fun getArguments(): Array<String> {
         val settings = PortSettingsRepository(this).load()
         val filesDir = filesDir.absolutePath
+
+        // Self-heal do driver Vortek ativo (review 17-e1 #1): o
+        // nativeLibraryDir muda a cada atualização do app (Android 8+) e o
+        // <files>/drivers/active.txt sobrevive à atualização — sem isto, o
+        // jogo abriria no driver do sistema com o Vortek ainda
+        // "selecionado" nas Configurações. Best-effort, nunca derruba o boot.
+        runCatching { GpuDriverManager.reconcileActiveVortek(this) }
         // game_data_root: (1) ISO IN-PLACE — caminho real do .iso OU
         // content:// URI do SAF (o nativo monta a imagem GDFX onde ela está,
         // via DiscImageDevice — modelo XenDroid, sem cópia); (2) pasta REAL

@@ -622,8 +622,11 @@ private fun DriversSection() {
     var importing by remember { mutableStateOf(false) }
 
     // Recarrega a lista ao voltar para esta tela (ex.: driver removido
-    // manualmente pelo sistema / outra instância).
+    // manualmente pelo sistema / outra instância). O reconcile cura o
+    // active.txt defasado do Vortek após atualização do app (o
+    // nativeLibraryDir muda a cada reinstalação no Android 8+).
     LaunchedEffect(Unit) {
+        runCatching { GpuDriverManager.reconcileActiveVortek(context) }
         drivers = GpuDriverManager.list(context)
         activeId = GpuDriverManager.activeId(context)
     }
@@ -646,10 +649,14 @@ private fun DriversSection() {
                     "será usado no próximo início do jogo."
                 isError = false
             } catch (e: GpuDriverManager.DriverImportException) {
+                // [17-e1 #5] se o import deu certo e só o setActive falhou,
+                // o driver novo ficava invisível até reabrir a tela.
+                drivers = GpuDriverManager.list(context)
                 message = e.message
                 isError = true
             } catch (e: Exception) {
-                message = "Falha ao importar driver: ${e.message ?: "erro desconhecido"}"
+                drivers = GpuDriverManager.list(context)
+                message = "Falha ao importar driver — tente novamente."
                 isError = true
             }
             importing = false
@@ -678,8 +685,14 @@ private fun DriversSection() {
             subtitle = "Vulkan do fabricante do aparelho",
             selected = activeId == null,
             onSelect = {
-                GpuDriverManager.clearActive(context)
-                activeId = null
+                // [17-e1 #3/#4] I/O fora da main thread + feedback explícito
+                // (antes a mensagem de sucesso anterior ficava pendurada).
+                scope.launch {
+                    withContext(Dispatchers.IO) { GpuDriverManager.clearActive(context) }
+                    activeId = null
+                    message = "Usando o driver Vulkan do sistema."
+                    isError = false
+                }
             },
             onDelete = null
         )
@@ -695,20 +708,27 @@ private fun DriversSection() {
                     "(Winlator, LGPL-2.1)",
                 selected = activeId == GpuDriverManager.VORTEK_DRIVER_ID,
                 onSelect = {
-                    runCatching { GpuDriverManager.setActiveVortek(context) }
-                        .onSuccess {
-                            activeId = GpuDriverManager.VORTEK_DRIVER_ID
-                            message = "Vortek ativado — camada de compatibilidade " +
-                                "sobre o driver do sistema. Recomendado em GPUs " +
-                                "Mali e outras não-Adreno; em Adreno, o Turnip " +
-                                "direto costuma ser mais rápido. Vale no " +
-                                "próximo início do jogo."
-                            isError = false
+                    // [17-e1 #3] seleção fora da main thread, como o import.
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                GpuDriverManager.setActiveVortek(context)
+                            }
                         }
-                        .onFailure { vortekErr ->
-                            message = vortekErr.message
-                            isError = true
-                        }
+                            .onSuccess {
+                                activeId = GpuDriverManager.VORTEK_DRIVER_ID
+                                message = "Vortek ativado — camada de compatibilidade " +
+                                    "sobre o driver do sistema. Recomendado em GPUs " +
+                                    "Mali e outras não-Adreno; em Adreno, o Turnip " +
+                                    "direto costuma ser mais rápido. Vale no " +
+                                    "próximo início do jogo."
+                                isError = false
+                            }
+                            .onFailure { vortekErr ->
+                                message = vortekErr.message
+                                isError = true
+                            }
+                    }
                 },
                 onDelete = null
             )
@@ -723,23 +743,36 @@ private fun DriversSection() {
                     .joinToString(" · "),
                 selected = activeId == driver.id,
                 onSelect = {
-                    runCatching { GpuDriverManager.setActive(context, driver.id) }
-                        .onSuccess {
-                            activeId = driver.id
-                            message = "Driver “${driver.name}” será usado no próximo início do jogo."
-                            isError = false
+                    // [17-e1 #3] seleção fora da main thread, como o import.
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                GpuDriverManager.setActive(context, driver.id)
+                            }
                         }
-                        .onFailure { importMsg ->
-                            message = importMsg.message
-                            isError = true
-                        }
+                            .onSuccess {
+                                activeId = driver.id
+                                message = "Driver “${driver.name}” será usado no próximo início do jogo."
+                                isError = false
+                            }
+                            .onFailure { importMsg ->
+                                message = importMsg.message
+                                isError = true
+                            }
+                    }
                 },
                 onDelete = {
-                    GpuDriverManager.remove(context, driver.id)
-                    drivers = GpuDriverManager.list(context)
-                    activeId = GpuDriverManager.activeId(context)
-                    message = "Driver removido."
-                    isError = false
+                    // [17-e1 #3] deleteRecursively de dezenas de MB não pode
+                    // rodar na main thread (risco de ANR).
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            GpuDriverManager.remove(context, driver.id)
+                        }
+                        drivers = GpuDriverManager.list(context)
+                        activeId = GpuDriverManager.activeId(context)
+                        message = "Driver removido."
+                        isError = false
+                    }
                 }
             )
             Hairline()
