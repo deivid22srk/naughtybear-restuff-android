@@ -563,7 +563,15 @@ void vt_handle_vkWaitForFences(VkContext* context) {
 
     if (timeout != 0) {
         VkResult result = VK_SUCCESS;
-        int fds[fenceCount];
+        int fds[fenceCount > 0 ? fenceCount : 1];
+        // Port Android (naughtybear-restuff-android): fds inicializados — antes,
+        // em falha parcial do vkGetFenceFd, o restante do vetor era lixo de stack
+        // enviado via SCM_RIGHTS (sendmsg falha com EBADF → cliente travava em
+        // recv_fds, ou esperava em fd aleatório → sucesso prematuro → reciclagem
+        // antecipada de command buffers/semáforos → frames pretos intermitentes).
+        for (int i = 0; i < fenceCount; i++) fds[i] = -1;
+
+        bool allExported = fenceCount > 0;
         for (int i = 0; i < fenceCount; i++) {
             VkFenceGetFdInfoKHR getFdInfo = {0};
             getFdInfo.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
@@ -571,11 +579,29 @@ void vt_handle_vkWaitForFences(VkContext* context) {
             getFdInfo.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
 
             result = vulkanWrapper.vkGetFenceFd(device, &getFdInfo, &fds[i]);
-            if (result != VK_SUCCESS) break;
+            if (result != VK_SUCCESS) { allExported = false; break; }
+            // SYNC_FD = -1 (fence já sinalizado, permitido pela spec) NÃO pode
+            // viajar via SCM_RIGHTS (sendmsg → EBADF).
+            if (fds[i] < 0) { allExported = false; break; }
         }
 
-        send_fds(context->clientFd, fds, fenceCount, &result, sizeof(VkResult));
-        for (int i = 0; i < fenceCount; i++) CLOSEFD(fds[i]);
+        if (allExported) {
+            send_fds(context->clientFd, fds, fenceCount, &result, sizeof(VkResult));
+            for (int i = 0; i < fenceCount; i++) CLOSEFD(fds[i]);
+        }
+        else {
+            // Fallback: espera REAL aqui (o cliente pediu espera bloqueante de
+            // qualquer forma). Fence já sinalizado retorna na hora; export
+            // realmente falho é raro e antes corrompia o protocolo. Resposta
+            // SEM fds — o cliente novo entende numFds==0 + status como
+            // "espera concluída no servidor".
+            for (int i = 0; i < fenceCount; i++) {
+                if (fds[i] >= 0) CLOSEFD(fds[i]);
+            }
+            VkResult waitResult = vulkanWrapper.vkWaitForFences(device, fenceCount, fences, waitAll, timeout);
+            if (waitResult == VK_ERROR_DEVICE_LOST) context->status = waitResult;
+            send_fds(context->clientFd, NULL, 0, &waitResult, sizeof(VkResult));
+        }
     }
     else {
         VkResult result = vulkanWrapper.vkWaitForFences(device, fenceCount, fences, waitAll, timeout);
@@ -2172,7 +2198,11 @@ void vt_handle_vkAcquireNextImageKHR(VkContext* context) {
     VkResult result = vulkanWrapper.vkAcquireNextImage(device, swapchain, timeout, semaphore, fence, &imageIndex);
     if (result == VK_ERROR_DEVICE_LOST) context->status = result;
 
-    vt_send(context->clientRing, result == VK_SUCCESS ? imageIndex : result, NULL, 0);
+    // Port Android: SUBOPTIMAL também adquiriu uma imagem válida — enviar o
+    // ÍNDICE (como SUCCESS). Antes enviava o código de erro como payload; o
+    // cliente não conseguia distinguir de um status e o índice ficava
+    // indefinido no chamador (framebuffer OOB em transições de superfície).
+    vt_send(context->clientRing, (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) ? imageIndex : result, NULL, 0);
 }
 
 void vt_handle_vkQueuePresentKHR(VkContext* context) {
@@ -2527,7 +2557,10 @@ void vt_handle_vkAcquireNextImage2KHR(VkContext* context) {
         vulkanWrapper.vkAcquireNextImage(device, acquireInfo.swapchain, acquireInfo.timeout, acquireInfo.semaphore, acquireInfo.fence, &imageIndex);
     if (result == VK_ERROR_DEVICE_LOST) context->status = result;
 
-    vt_send(context->clientRing, result == VK_SUCCESS ? imageIndex : result, NULL, 0);
+    // Port Android: SUBOPTIMAL também adquiriu imagem válida — índice, não
+    // status (idem vkAcquireNextImageKHR; índice indefinido no chamador =
+    // framebuffer OOB).
+    vt_send(context->clientRing, (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) ? imageIndex : result, NULL, 0);
 }
 
 void vt_handle_vkCmdDispatchBase(VkContext* context) {

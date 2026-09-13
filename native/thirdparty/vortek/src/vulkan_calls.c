@@ -603,13 +603,23 @@ VkResult vt_call_vkWaitForFences(VkDevice device, uint32_t fenceCount, const VkF
         return (VkResult)result;   
     }
     else {
-        int fds[fenceCount];
+        // Port Android (naughtybear-restuff-android): fenceCount==0 é VLA de
+        // tamanho zero (UB) — guarda com mínimo 1.
+        int fds[fenceCount > 0 ? fenceCount : 1];
         int result, numFds;
         recv_fds(serverFd, fds, &numFds, &result, sizeof(VkResult));
         VT_CALL_UNLOCK();
-        
-        if (numFds == 0 || result != VK_SUCCESS) return VK_ERROR_DEVICE_LOST;
-        int timeoutMs = timeout != UINT64_MAX ? timeout / 1000000 : 0;
+
+        // numFds==0 + status = espera concluída no SERVIDOR (fallback do
+        // export SYNC_FD: fence já sinalizado / export falhou). Propagar o
+        // status REAL (incl. VK_TIMEOUT) — antes qualquer caso virava
+        // VK_ERROR_DEVICE_LOST, matando o device em timeouts legítimos.
+        if (numFds == 0 || result != VK_SUCCESS) return (VkResult)result;
+
+        // Arredonda para CIMA: timeout de 1ns..1ms truncava para 0 → o
+        // waitForEvents trata <=0 como infinito (-1) → espera eterna onde o
+        // chamador pediu microssegundos.
+        int timeoutMs = timeout != UINT64_MAX ? (int)((timeout + 999999) / 1000000) : 0;
         result = waitForEvents(fds, numFds, waitAll ? true : false, timeoutMs);
         for (int i = 0; i < numFds; i++) CLOSEFD(fds[i]);
         return result == EVENT_RESULT_TIMEOUT ? VK_TIMEOUT : (result == EVENT_RESULT_SUCCESS ? VK_SUCCESS : VK_ERROR_DEVICE_LOST);

@@ -22,4 +22,11 @@ extern VkResult ShaderInspector_inspectShaderStages(ShaderInspector* shaderInspe
 extern VkResult ShaderInspector_createModule(ShaderInspector* shaderInspector, VkDevice device, const uint32_t* code, size_t codeSize, ShaderModule** ppModule);
 extern bool isFormatScaled(VkFormat format);
 
+// Port Android (naughtybear-restuff-android): expostas para o teste unitário
+// de host do CI. getFallbackFormat: USCALED/SSCALED → UINT/SINT (vertex fetch
+// de drivers móveis não suporta SCALED). formatIntSignedness: 0 = inteiro sem
+// sinal (ConvertUToF), 1 = com sinal (ConvertSToF).
+extern VkFormat getFallbackFormat(VkFormat format);
+extern int formatIntSignedness(VkFormat format);
+
 #endif

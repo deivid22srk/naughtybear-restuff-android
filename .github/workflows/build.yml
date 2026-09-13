@@ -85,6 +85,26 @@ jobs:
             build/rt/vk_object.o build/rt/arrays.o -lpthread -o build/rt/roundtrip
           ./build/rt/roundtrip
 
+      # Teste unitário (host) do mapeamento de formatos vertex SCALED do
+      # shader_inspector — regressão do bug log4: PACK32 10-10-10-2
+      # (k_2_10_10_10 do Xenos) não era convertido USCALED→UINT + rewrite
+      # SPIR-V → triângulos gigantes/malhas 3D ausentes no Adreno.
+      - name: Vortek vertex-format conversion test (host)
+        run: |
+          set -e
+          V=native/thirdparty/vortek
+          R=native/thirdparty/vortekrenderer
+          mkdir -p build/rt
+          gcc -c -O1 -w -DVK_USE_PLATFORM_ANDROID_KHR -DVT_SERVER=1 -D_GNU_SOURCE \
+            -I"$R/include" -I"$R/winlator/include" -I"$V/tests/hoststub" \
+            "$R/src/shader_inspector.c" -o build/rt/shader_inspector.o
+          gcc -c -O1 -w -DVK_USE_PLATFORM_ANDROID_KHR -DVT_SERVER=1 -D_GNU_SOURCE \
+            -I"$R/include" -I"$R/winlator/include" -I"$V/tests/hoststub" \
+            "$V/tests/unit_formats.c" -o build/rt/unit_formats.o
+          gcc -O1 build/rt/shader_inspector.o build/rt/unit_formats.o \
+            build/rt/arrays.o -lpthread -o build/rt/unit_formats
+          ./build/rt/unit_formats
+
       - name: Native Android build (librestuff.so)
         run: bash scripts/build_android_native.sh
 

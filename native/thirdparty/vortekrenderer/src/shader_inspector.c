@@ -59,7 +59,11 @@ typedef struct MergeSpvInstOptions {
     SpvInstFilter fetchFilter;
 } MergeSpvInstOptions;
 
-static VkFormat getFallbackFormat(VkFormat format) {
+// Port Android (naughtybear-restuff-android): exposas (não-static) para o
+// teste unitário de host do CI — mapeamento USCALED/SSCALED → UINT/SINT é o
+// coração do fix de renderização (log4: triângulos gigantes/malhas 3D
+// ausentes com k_2_10_10_10 do Xenos).
+VkFormat getFallbackFormat(VkFormat format) {
     switch (format) {
         case VK_FORMAT_R8_USCALED:
             return VK_FORMAT_R8_UINT;
@@ -85,6 +89,20 @@ static VkFormat getFallbackFormat(VkFormat format) {
             return VK_FORMAT_R8G8B8A8_UINT;
         case VK_FORMAT_R8G8B8A8_SSCALED:
             return VK_FORMAT_R8G8B8A8_SINT;
+        // Port Android (naughtybear-restuff-android): família PACK32 10-10-10-2
+        // faltava na conversão — o emulador (Xenos→Vulkan) mapeia k_2_10_10_10
+        // não-normalizado exatamente para estes formatos. Sem a conversão, o
+        // pipeline chegava ao Adreno com USCALED/SSCALED PACK32 (sem suporte
+        // no vertex fetch do Qualcomm) → rasterização indefinida → triângulos
+        // gigantes de cor sólida e malhas 3D ausentes (log4).
+        case VK_FORMAT_A2B10G10R10_USCALED_PACK32:
+            return VK_FORMAT_A2B10G10R10_UINT_PACK32;
+        case VK_FORMAT_A2B10G10R10_SSCALED_PACK32:
+            return VK_FORMAT_A2B10G10R10_SINT_PACK32;
+        case VK_FORMAT_A2R10G10B10_USCALED_PACK32:
+            return VK_FORMAT_A2R10G10B10_UINT_PACK32;
+        case VK_FORMAT_A2R10G10B10_SSCALED_PACK32:
+            return VK_FORMAT_A2R10G10B10_SINT_PACK32;
         default:
             return format;
     }
@@ -271,6 +289,25 @@ static uint32_t mergeSpvInst(MergeSpvInstOptions* options, uint32_t instLength, 
     return resultId;
 }
 
+int formatIntSignedness(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R8G8_UINT:
+        case VK_FORMAT_R16G16_UINT:
+        case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R16G16B16A16_UINT:
+        // Port Android: UINT PACK32 (fallback do USCALED 10-10-10-2) precisa de
+        // signedness=0 — sem isto caía no default (1, SIGNED) e o ConvertSToF
+        // negativizaria componentes 512-1023 → geometria espelhada.
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+        case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+            return 0;
+        default:
+            return 1;
+    }
+}
+
 static void convertInputVariableFormatScaled(ShaderModule* module, ArrayList* mergeCodes, int decorOffset, VertexAnnotation* vertexAnnotation) {
     int index = fetchSpvInstIndex(module->code, module->codeSize, decorOffset, SpvOpTypePointer, 1, module->code[vertexAnnotation->varOffset+1], true);
     int componentCount = 4;
@@ -280,20 +317,7 @@ static void convertInputVariableFormatScaled(ShaderModule* module, ArrayList* me
         if (index != -1) componentCount = module->code[index+3];
     }
 
-    int signedness;
-    switch (vertexAnnotation->format) {
-        case VK_FORMAT_R8_UINT:
-        case VK_FORMAT_R16_UINT:
-        case VK_FORMAT_R8G8_UINT:
-        case VK_FORMAT_R16G16_UINT:
-        case VK_FORMAT_R8G8B8A8_UINT:
-        case VK_FORMAT_R16G16B16A16_UINT:
-            signedness = 0;
-            break;
-        default:
-            signedness = 1;
-            break;
-    }
+    int signedness = formatIntSignedness(vertexAnnotation->format);
 
     index = fetchSpvOpTypeIndex(module->code, module->codeSize, decorOffset, -1, 0);
     if (index == -1) return;
@@ -702,6 +726,13 @@ bool isFormatScaled(VkFormat format) {
         case VK_FORMAT_R16G16_SSCALED:
         case VK_FORMAT_R16G16B16A16_USCALED:
         case VK_FORMAT_R16G16B16A16_SSCALED:
+        // Port Android (naughtybear-restuff-android): PACK32 10-10-10-2 — ver
+        // getFallbackFormat acima (k_2_10_10_10 do Xenos; Adreno sem vertex
+        // fetch USCALED/SSCALED empacotado).
+        case VK_FORMAT_A2B10G10R10_USCALED_PACK32:
+        case VK_FORMAT_A2B10G10R10_SSCALED_PACK32:
+        case VK_FORMAT_A2R10G10B10_USCALED_PACK32:
+        case VK_FORMAT_A2R10G10B10_SSCALED_PACK32:
             return true;
         default:
             return false;
