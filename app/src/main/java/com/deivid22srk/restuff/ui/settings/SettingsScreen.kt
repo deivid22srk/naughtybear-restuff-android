@@ -657,13 +657,16 @@ private fun DriversSection() {
     }
 
     Column {
-        SectionHeader("Drivers gráficos (Turnip)")
+        SectionHeader("Drivers gráficos (Turnip / Vortek)")
 
         Text(
             text = "Importe um driver Vulkan (.zip) para melhorar a " +
-                "compatibilidade e o desempenho em GPUs Adreno. O driver é " +
-                "usado no próximo início do jogo; se falhar, o motor volta ao " +
-                "driver do sistema e o motivo aparece no Diagnóstico.",
+                "compatibilidade e o desempenho em GPUs Adreno. Para GPUs " +
+                "não-Adreno (Mali e outras), experimente a camada Vortek — " +
+                "executa o jogo sobre o driver do sistema com correções de " +
+                "compatibilidade. O driver é usado no próximo início do jogo; " +
+                "se falhar, o motor volta ao driver do sistema e o motivo " +
+                "aparece no Diagnóstico.",
             color = PortPalette.textSecondary,
             style = PortType.rowSub
         )
@@ -681,6 +684,36 @@ private fun DriversSection() {
             onDelete = null
         )
         Hairline()
+
+        // Vortek — camada de compatibilidade Vulkan embutida (experimental).
+        // Créditos: Vortek © brunodev85 (Winlator), LGPL-2.1 — ver README.
+        if (GpuDriverManager.isVortekAvailable(context)) {
+            DriverOptionRow(
+                title = "Vortek (experimental)",
+                subtitle = "Camada de compatibilidade sobre o driver do " +
+                    "sistema — pensada p/ Mali e demais GPUs · © brunodev85 " +
+                    "(Winlator, LGPL-2.1)",
+                selected = activeId == GpuDriverManager.VORTEK_DRIVER_ID,
+                onSelect = {
+                    runCatching { GpuDriverManager.setActiveVortek(context) }
+                        .onSuccess {
+                            activeId = GpuDriverManager.VORTEK_DRIVER_ID
+                            message = "Vortek ativado — camada de compatibilidade " +
+                                "sobre o driver do sistema. Recomendado em GPUs " +
+                                "Mali e outras não-Adreno; em Adreno, o Turnip " +
+                                "direto costuma ser mais rápido. Vale no " +
+                                "próximo início do jogo."
+                            isError = false
+                        }
+                        .onFailure { vortekErr ->
+                            message = vortekErr.message
+                            isError = true
+                        }
+                },
+                onDelete = null
+            )
+            Hairline()
+        }
 
         drivers.forEach { driver ->
             DriverOptionRow(

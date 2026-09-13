@@ -137,4 +137,9 @@ Variáveis: `ANDROID_NDK_HOME` (ou `ANDROID_HOME`), `ABI` (padrão arm64-v8a),
 - **Tom (crack)** e comunidade — [rexglue-SDK](https://github.com/rexglue/rexglue-sdk)
 - **MaxDeadBear / Tynan / MadLadMikael** — [NaughtyBear_ReStuff](https://github.com/MaxDeadBear/NaughtyBear_ReStuff)
 - **Xenia** e **XenonRecomp** — fundamentos do recomp Xbox 360
+- **Bruno SX (brunodev85)** — [Vortek](https://github.com/brunodev85/vortek) / [Winlator](https://github.com/brunodev85/winlator):
+  a camada de compatibilidade Vulkan opcional do app (Configurações → Drivers
+  gráficos → *Vortek*) é baseada no cliente + servidor Vortek, adaptada para
+  rodar em-processo com *android-surface passthrough* (LGPL-2.1; fontes e
+  modificações em `native/thirdparty/vortek/` e `native/thirdparty/vortekrenderer/`)
 - **Hailgames (deivid22srk)** — port Android e template de interface

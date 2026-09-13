@@ -143,6 +143,45 @@ for adrlib in libadrenotools.so libmain_hook.so libhook_impl.so \
 done
 echo "  adrenotools: 5 libs copiadas para jniLibs"
 
+# --- [1e] Vortek (cliente libvulkan_vortek.so + servidor libvortekrenderer.so)
+# Camada de compatibilidade Vulkan do Vortek (brunodev85/Winlator, LGPL-2.1):
+# o cliente é um ICD que o motor dlopena (exporta vkGetInstanceProcAddr
+# padrão); o servidor executa as chamadas no driver Vulkan do HOST com fixups
+# (emulação de formato, BC decode, timeline semaphores, pipelines async).
+# Cliente e servidor vivem no MESMO processo do jogo — ver
+# native/thirdparty/vortek{,renderer}/README-PROVENANCE.md.
+VORTEK_BUILD="$ROOT/build/vortek-$ABI"
+if [[ ! -f "$VORTEK_BUILD/client/libvulkan_vortek.so" || ! -f "$VORTEK_BUILD/server/libvortekrenderer.so" ]]; then
+    echo "== vortek: build Android ($ABI) =="
+    cmake -S "$ROOT/native/thirdparty/vortek" -B "$VORTEK_BUILD/client" \
+        -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM="android-28" \
+        -DANDROID_STL=none \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$VORTEK_BUILD/client" --parallel "$(nproc)"
+    cmake -S "$ROOT/native/thirdparty/vortekrenderer" -B "$VORTEK_BUILD/server" \
+        -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM="android-28" \
+        -DANDROID_STL=none \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DADRENOTOOLS_INCLUDE_DIR="$ADRENOTOOLS_SRC/include" \
+        -DADRENOTOOLS_LIBRARY="$ADRENOTOOLS_BUILD/libadrenotools.so"
+    cmake --build "$VORTEK_BUILD/server" --parallel "$(nproc)"
+fi
+for vtlib in libvulkan_vortek.so libvortekrenderer.so; do
+    VTLIB_PATH=$(find "$VORTEK_BUILD" -name "$vtlib" -type f 2>/dev/null | head -1)
+    if [[ -z "$VTLIB_PATH" ]]; then
+        echo "ERRO FATAL: $vtlib não construído (build vortek)" >&2
+        exit 1
+    fi
+    cp "$VTLIB_PATH" "$JNILIBS_DIR/"
+done
+echo "  vortek: 2 libs copiadas para jniLibs"
+
 # --- [2] librestuff.so -----------------------------------------------------
 echo "== librestuff.so ($ABI) =="
 cmake -S "$ROOT/native" -B "$BUILD_OUT" \

@@ -363,6 +363,53 @@ object GpuDriverManager {
         File(driversDir(context), id).deleteRecursively()
     }
 
+    // ------------------------------------------------------------------
+    // Vortek — camada de compatibilidade Vulkan embutida no APK
+    // (brunodev85/Winlator, LGPL-2.1). Não é um driver de GPU: o cliente
+    // (libvulkan_vortek.so) intercepta as chamadas Vulkan do motor e o
+    // servidor (libvortekrenderer.so) as executa no driver do SISTEMA com
+    // fixups de compatibilidade — pensado para GPUs não-Adreno (Mali etc.).
+    // ------------------------------------------------------------------
+
+    /** id sintático da opção Vortek no active.txt. */
+    const val VORTEK_DRIVER_ID = "vortek"
+
+    /** Caminho do cliente Vortek dentro do APK (nativeLibraryDir). */
+    fun vortekClientPath(context: Context): File =
+        File(context.applicationInfo.nativeLibraryDir, "libvulkan_vortek.so")
+
+    /** O cliente Vortek está embutido neste build? */
+    fun isVortekAvailable(context: Context): Boolean =
+        vortekClientPath(context).isFile
+
+    /**
+     * Ativa a camada Vortek: o active.txt aponta para o cliente embutido no
+     * APK e o android_main.cpp sobe o servidor antes do init gráfico. Se o
+     * servidor não responder, o motor cai no driver do sistema (preflight do
+     * vulkan_instance.cpp — motivo no Diagnóstico).
+     */
+    fun setActiveVortek(context: Context) {
+        val so = vortekClientPath(context)
+        if (!so.isFile) {
+            throw DriverImportException(
+                "Cliente Vortek não encontrado no APK (${so.name}) — este " +
+                    "build não inclui a camada de compatibilidade."
+            )
+        }
+        so.inputStream().use { input ->
+            val magic = ByteArray(4)
+            if (input.read(magic) < 4 ||
+                !(magic[0] == 0x7F.toByte() && magic[1] == 'E'.code.toByte() &&
+                    magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte())
+            ) {
+                throw DriverImportException(
+                    "Cliente Vortek inválido (não é um ELF) — reinstale o app."
+                )
+            }
+        }
+        activeFile(context).writeText("id=$VORTEK_DRIVER_ID\nlib=${so.absolutePath}\n")
+    }
+
     // ----------------------------------------------------------------------
     // Diagnóstico do último boot (escrito por vulkan_instance.cpp)
     // ----------------------------------------------------------------------

@@ -70,6 +70,13 @@ private fun computeInfo(context: android.content.Context): String {
     } catch (_: Exception) {
         false
     }
-    val renderer = if (hasCustomDriver) "VULKAN · TURNIP" else "VULKAN"
+    // Port: Vortek (camada de compatibilidade) tem rótulo próprio — não é
+    // Turnip (driver Mesa/AdrenoTools importado via zip).
+    val renderer = when {
+        hasCustomDriver && GpuDriverManager.activeId(context) ==
+            GpuDriverManager.VORTEK_DRIVER_ID -> "VULKAN · VORTEK"
+        hasCustomDriver -> "VULKAN · TURNIP"
+        else -> "VULKAN"
+    }
     return listOf("RESTUFF", renderer, abi).joinToString("  ·  ")
 }

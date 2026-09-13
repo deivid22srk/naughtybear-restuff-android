@@ -84,6 +84,11 @@ jobs:
               "lib/arm64-v8a/libhook_impl.so",
               "lib/arm64-v8a/libfile_redirect_hook.so",
               "lib/arm64-v8a/libgsl_alloc_hook.so",
+              # Vortek (camada de compatibilidade Vulkan, brunodev85/Winlator):
+              # cliente (dlopen direto pelo motor) + servidor (hospedado pelo
+              # android_main.cpp no mesmo processo).
+              "lib/arm64-v8a/libvulkan_vortek.so",
+              "lib/arm64-v8a/libvortekrenderer.so",
           }
           missing = required - set(libs)
           if missing:

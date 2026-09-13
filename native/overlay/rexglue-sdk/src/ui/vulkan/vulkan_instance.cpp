@@ -157,6 +157,59 @@ bool TryLoadCustomAdrenoDriver(platform::DynamicLibrary& loader, const char* cus
   return true;
 }
 
+// Port Android (naughtybear-restuff-android): carrega o CLIENTE Vortek
+// (libvulkan_vortek.so — camada de compatibilidade Vulkan, brunodev85/
+// Winlator, LGPL-2.1) com dlopen DIRETO + preflight do servidor.
+//
+// Diferente dos drivers HAL/ICD (Turnip — precisam do adrenotools para
+// resolver libcutils/libhardware no namespace sphal), o cliente Vortek é uma
+// .so convencional sem dependências Android restritas e exporta os símbolos
+// padrão do loader (vkGetInstanceProcAddr/vkCreateInstance/vkDestroyInstance,
+// adicionados pelo port). O preflight chama vortekInitOnce() — a conexão real
+// ao servidor hospedado pelo android_main.cpp — para que a ausência do
+// servidor vire um fallback LIMPO para o driver do sistema AGORA (com o
+// motivo no last_boot.txt), e não um vkCreateInstance morto mais adiante no
+// boot do motor.
+bool TryLoadVortekClient(platform::DynamicLibrary& loader, const char* custom_path) {
+  if (!loader.Load(custom_path, platform::SymbolResolution::kImmediate)) {
+    REXLOG_ERROR("Vulkan: falha ao carregar o cliente Vortek '{}': {}", custom_path,
+                 loader.last_error());
+    WriteDriverBootOutcome("custom_failed", custom_path,
+                           loader.last_error().empty() ? "dlopen failed" : loader.last_error().c_str());
+    return false;
+  }
+
+  if (loader.GetSymbol<void*>("vkGetInstanceProcAddr") == nullptr) {
+    REXLOG_ERROR("Vulkan: '{}' não exporta vkGetInstanceProcAddr (não é o cliente Vortek)",
+                 custom_path);
+    WriteDriverBootOutcome("custom_failed", custom_path, "vkGetInstanceProcAddr missing");
+    loader.Close();
+    return false;
+  }
+
+  using VortekInitOnceFn = bool (*)();
+  auto vortek_init_once = loader.GetSymbol<VortekInitOnceFn>("vortekInitOnce");
+  if (vortek_init_once == nullptr) {
+    REXLOG_ERROR("Vulkan: vortekInitOnce ausente em '{}'", custom_path);
+    WriteDriverBootOutcome("custom_failed", custom_path, "vortekInitOnce missing");
+    loader.Close();
+    return false;
+  }
+  if (!vortek_init_once()) {
+    REXLOG_ERROR(
+        "Vulkan: servidor Vortek indisponível (REX_VORTEK_SERVER_PATH) — usando "
+        "o driver do sistema");
+    WriteDriverBootOutcome("custom_failed", custom_path, "vortek server unavailable");
+    loader.Close();
+    return false;
+  }
+
+  REXLOG_INFO("Vulkan: cliente Vortek ATIVO ('{}') — camada de compatibilidade "
+              "sobre o driver Vulkan do host", custom_path);
+  WriteDriverBootOutcome("custom_ok", custom_path, "-");
+  return true;
+}
+
 }  // namespace
 #endif  // REX_PLATFORM_ANDROID
 
@@ -215,7 +268,16 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
 #if REX_PLATFORM_ANDROID
   const char* custom_loader = std::getenv("REX_VULKAN_LOADER_PATH");
   if (custom_loader != nullptr && custom_loader[0] != '\0') {
-    loader_loaded = TryLoadCustomAdrenoDriver(vulkan_instance->loader_, custom_loader);
+    // Port Android: o CLIENTE Vortek (libvulkan_vortek.so) tem caminho PRÓPRIO
+    // — dlopen direto + preflight do servidor (TryLoadVortekClient acima);
+    // drivers HAL/ICD (Turnip) seguem pelo adrenotools como antes.
+    const char* loader_basename = std::strrchr(custom_loader, '/');
+    loader_basename = loader_basename ? loader_basename + 1 : custom_loader;
+    if (std::strcmp(loader_basename, "libvulkan_vortek.so") == 0) {
+      loader_loaded = TryLoadVortekClient(vulkan_instance->loader_, custom_loader);
+    } else {
+      loader_loaded = TryLoadCustomAdrenoDriver(vulkan_instance->loader_, custom_loader);
+    }
   }
 #else
   // Desktop Linux: dlopen direto (ICDs de desktop exportam os símbolos do

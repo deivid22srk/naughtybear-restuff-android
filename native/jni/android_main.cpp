@@ -480,6 +480,68 @@ int main(int argc, char** argv) {
   // conhecidos), antes de qualquer init do motor/threads/memória mapeada.
   restuff_android::InstallCrashHandler(log_file_path, app_files_dir);
 
+  // Port Android: driver Vortek — camada de compatibilidade Vulkan
+  // (brunodev85/Winlator, LGPL-2.1; ver native/thirdparty/vortekrenderer/).
+  // Quando o driver ativo é o CLIENTE Vortek (libvulkan_vortek.so), o
+  // SERVIDOR sobe no MESMO processo, ANTES de qualquer init gráfico: socket
+  // Unix em <files>/vortek.sock + REX_VORTEK_SERVER_PATH para o cliente
+  // conectar. dlopen dinâmico (sem dependência de link — mesma estratégia do
+  // libadrenotools). Qualquer falha aqui segue para o driver do sistema:
+  // vulkan_instance.cpp faz o preflight do cliente (vortekInitOnce) e cai no
+  // loader do sistema quando o servidor não respondeu.
+  do {
+    const char* loader_path_vt = std::getenv("REX_VULKAN_LOADER_PATH");
+    if (loader_path_vt == nullptr ||
+        std::strstr(loader_path_vt, "libvulkan_vortek.so") == nullptr) {
+      break;
+    }
+    const char* native_lib_dir_vt = std::getenv("REX_ANDROID_NATIVE_LIB_DIR");
+    if (app_files_dir == nullptr || native_lib_dir_vt == nullptr ||
+        native_lib_dir_vt[0] == '\0') {
+      ALOG("Vortek: --native-lib-dir/files indisponíveis — usando driver do sistema");
+      break;
+    }
+
+    char renderer_path[512];
+    snprintf(renderer_path, sizeof(renderer_path), "%s/libvortekrenderer.so",
+             native_lib_dir_vt);
+    void* renderer_lib = dlopen(renderer_path, RTLD_NOW);
+    if (renderer_lib == nullptr) {
+      ALOG("Vortek: falha ao carregar %s: %s", renderer_path, dlerror());
+      break;
+    }
+
+    // API C de hospedagem (include/vortek_server_host.h do vortekrenderer).
+    using VortekInitFn = int (*)(const char*, const char*);
+    using VortekStartFn = int (*)(const char*, const void*);
+    auto vt_init = reinterpret_cast<VortekInitFn>(
+        dlsym(renderer_lib, "vortek_server_init"));
+    auto vt_start = reinterpret_cast<VortekStartFn>(
+        dlsym(renderer_lib, "vortek_server_start"));
+    if (vt_init == nullptr || vt_start == nullptr) {
+      ALOG("Vortek: API de hospedagem ausente em libvortekrenderer.so");
+      break;
+    }
+
+    // Driver host = SISTEMA (o caso de uso do Vortek: Mali e demais GPUs
+    // não-Adreno). vt_init já aceita um driver custom (padrão AdrenoTools)
+    // como segundo argumento para uma extensão futura.
+    if (vt_init(native_lib_dir_vt, nullptr) != 0) {
+      ALOG("Vortek: init do servidor falhou (detalhes no logcat, tag 'System.out')");
+      break;
+    }
+
+    char vortek_socket_path[512];
+    snprintf(vortek_socket_path, sizeof(vortek_socket_path), "%s/vortek.sock",
+             app_files_dir);
+    if (vt_start(vortek_socket_path, nullptr) != 0) {
+      ALOG("Vortek: servidor não subiu em %s", vortek_socket_path);
+      break;
+    }
+    setenv("REX_VORTEK_SERVER_PATH", vortek_socket_path, 1);
+    ALOG("Vortek: servidor ativo (%s); driver host = sistema", vortek_socket_path);
+  } while (false);
+
   // Hooks Android do SDK: dlopen de libc/libandroid no SDK + bootstrap JNI
   // da ponte SAF (JavaVM/Context do thread principal do SDL, antes de
   // qualquer thread/mapped memory do motor).
