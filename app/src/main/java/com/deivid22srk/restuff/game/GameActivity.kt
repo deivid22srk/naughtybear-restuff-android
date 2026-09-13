@@ -1,10 +1,15 @@
 package com.deivid22srk.restuff.game
 
 import android.os.Environment
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.deivid22srk.restuff.data.GamePaths
 import com.deivid22srk.restuff.data.GpuDriverManager
+import com.deivid22srk.restuff.settings.PortSettings
 import com.deivid22srk.restuff.settings.PortSettingsRepository
 import org.libsdl.app.SDLActivity
 import java.io.File
@@ -28,6 +33,16 @@ class GameActivity : SDLActivity() {
 
     private var virtualPad: VirtualGamepadView? = null
     private var fpsCounter: FpsCounterView? = null
+    private var quickDialog: QuickSettingsDialog? = null
+    private var exitDialog: ExitConfirmDialog? = null
+
+    /** Gesto de 4 dedos capturado: o resto do fluxo é engolido até soltarem. */
+    private var menuGestureCaptured = false
+
+    private companion object {
+        /** Nº de dedos simultâneos que abre o painel de ajustes rápidos. */
+        const val MENU_FINGERS = 4
+    }
 
     /**
      * Resolve o diretório de logs no STORAGE PÚBLICO
@@ -173,16 +188,20 @@ class GameActivity : SDLActivity() {
         super.onCreate(savedInstanceState)
         NativeBridge.ensureLoaded()
 
-        // Overlay do virtual gamepad por cima da SDLSurface.
+        // Overlay do virtual gamepad por cima da SDLSurface. A view é SEMPRE
+        // criada (visibilidade conforme a preferência): o diálogo de ajustes
+        // rápidos liga/desliga AO VIVO, sem recriar nada.
         val settings = PortSettingsRepository(this).load()
         val layout = SDLActivity.getContentView() as? ViewGroup
-        if (layout != null && settings.showOverlayControls) {
+        if (layout != null) {
             val pad = VirtualGamepadView(
                 context = this,
                 opacity = settings.overlayOpacity,
                 scale = settings.overlayScale,
                 haptics = settings.hapticFeedback,
             )
+            pad.visibility =
+                if (settings.showOverlayControls) View.VISIBLE else View.GONE
             val params = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -193,9 +212,10 @@ class GameActivity : SDLActivity() {
 
         // Pill de FPS (design Mel & Carvão): mono âmbar no canto superior
         // direito, lendo os presents Vulkan REAIS via JNI — ativada nas
-        // Configurações (Desempenho → Contador de FPS). Não consome toques.
+        // Configurações, no painel de 4 dedos, ou aqui por padrão. Não
+        // consome toques.
         if (settings.showFpsCounter) {
-            fpsCounter = FpsCounterView.addTo(this)
+            setFpsCounterVisible(true)
         }
     }
 
@@ -204,6 +224,152 @@ class GameActivity : SDLActivity() {
         fpsCounter = null
         virtualPad?.shutdown()
         virtualPad = null
+        quickDialog?.dismiss()
+        quickDialog = null
+        exitDialog?.dismiss()
+        exitDialog = null
         super.onDestroy()
+    }
+
+    // ------------------------------------------------------------------
+    // Gesto de 4 dedos → painel de ajustes rápidos
+    // ------------------------------------------------------------------
+
+    /**
+     * Vê TODOS os eventos de toque (nível Activity, antes da árvore de
+     * views) — funciona tanto com o overlay ligado (toques consumidos pelo
+     * gamepad) quanto desligado (toques na superfície SDL). Ao detectar 4
+     * dedos: manda ACTION_CANCEL para a árvore (o gamepad solta os botões,
+     * o SDL solta os toques), engole o resto do gesto e abre o painel.
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> menuGestureCaptured = false
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (!menuGestureCaptured &&
+                    ev.pointerCount >= MENU_FINGERS &&
+                    noDialogShowing()
+                ) {
+                    menuGestureCaptured = true
+                    cancelActiveTouchGesture(ev)
+                    showQuickSettings()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> menuGestureCaptured = false
+        }
+        if (menuGestureCaptured) return true // engole o resto do gesto
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun noDialogShowing(): Boolean =
+        quickDialog?.isShowing != true && exitDialog?.isShowing != true
+
+    /** Sintetiza um ACTION_CANCEL para o alvo atual do gesto em curso. */
+    private fun cancelActiveTouchGesture(ev: MotionEvent) {
+        runCatching {
+            val cancel = MotionEvent.obtain(ev)
+            cancel.action = MotionEvent.ACTION_CANCEL
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Botão voltar → confirmação antes de sair para a tela inicial
+    // ------------------------------------------------------------------
+
+    /**
+     * O SDLActivity consome o KEYCODE_BACK como evento nativo do jogo — o
+     * onBackPressed padrão nunca chega. Interceptamos aqui ANTES: back do
+     * sistema (barra/gesto, fonte teclado) mostra o diálogo; back de
+     * mouse/gamepad físicos segue para o SDL como sempre.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && isSystemBackSource(event)) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                handleBackRequested()
+            }
+            return true // consome DOWN e UP (não vai para o SDL)
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** Back “do sistema”: barra de navegação/gesto. Exclui mouse (botão
+     * direito emulado) e gamepads físicos — esses seguem para o SDL. */
+    private fun isSystemBackSource(event: KeyEvent): Boolean {
+        val interactive = InputDevice.SOURCE_MOUSE or InputDevice.SOURCE_GAMEPAD or
+            InputDevice.SOURCE_DPAD or InputDevice.SOURCE_JOYSTICK
+        return (event.source and interactive) == 0
+    }
+
+    override fun onBackPressed() {
+        // Caminho do gesto de navegação (sem KeyEvent) e belt-and-suspenders.
+        handleBackRequested()
+    }
+
+    private fun handleBackRequested() {
+        when {
+            quickDialog?.isShowing == true -> quickDialog?.dismiss()
+            exitDialog?.isShowing == true -> exitDialog?.dismiss()
+            else -> showExitConfirm()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Painel de ajustes rápidos (aplicação ao vivo + persistência)
+    // ------------------------------------------------------------------
+
+    private fun showQuickSettings() {
+        val settings = PortSettingsRepository(this).load()
+        val dialog = QuickSettingsDialog(
+            context = this,
+            initial = settings,
+            onChange = { updated ->
+                applyOverlaySettings(updated)
+                PortSettingsRepository(this).save(updated)
+            },
+            onExitRequested = { showExitConfirm() },
+        )
+        quickDialog = dialog
+        dialog.setOnDismissListener { if (quickDialog === dialog) quickDialog = null }
+        dialog.show()
+    }
+
+    private fun showExitConfirm() {
+        val dialog = ExitConfirmDialog(
+            context = this,
+            onExit = {
+                // Zera o pad ANTES de encerrar (nada de botão preso no fim).
+                virtualPad?.shutdown()
+                superOnBackPressed()
+            },
+        )
+        exitDialog = dialog
+        dialog.setOnDismissListener { if (exitDialog === dialog) exitDialog = null }
+        dialog.show()
+    }
+
+    /** Aplica as preferências do painel AO VIVO (o jogo segue rodando). */
+    private fun applyOverlaySettings(s: PortSettings) {
+        virtualPad?.let { pad ->
+            pad.setOpacity(s.overlayOpacity)
+            pad.setScale(s.overlayScale)
+            pad.setHaptics(s.hapticFeedback)
+            pad.visibility = if (s.showOverlayControls) View.VISIBLE else View.GONE
+        }
+        setFpsCounterVisible(s.showFpsCounter)
+    }
+
+    private fun setFpsCounterVisible(visible: Boolean) {
+        if (visible && fpsCounter == null) {
+            fpsCounter = FpsCounterView.addTo(this)
+        } else if (!visible) {
+            fpsCounter?.let { fps ->
+                (fps.parent as? ViewGroup)?.removeView(fps)
+                fps.stop()
+            }
+            fpsCounter = null
+        }
     }
 }

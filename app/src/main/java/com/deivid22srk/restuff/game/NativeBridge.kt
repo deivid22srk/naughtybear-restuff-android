@@ -45,7 +45,9 @@ object NativeBridge {
      * joystick P1. Chamado a cada frame de toque (throttled pelo overlay).
      *
      * @param buttons bitmask: bit0 A, 1 B, 2 X, 3 Y, 4 Back, 5 Guide, 6 Start,
-     *                7 LB, 8 RB, 9 LS, 10 RS, 11 DUp, 12 DDown, 13 DLeft, 14 DRight
+     *                7 LS, 8 RS, 9 LB, 10 RB, 11 DUp, 12 DDown, 13 DLeft,
+     *                14 DRight (ordem canônica SDL_GAMEPAD_BUTTON_* — o
+     *                joystick virtual mapeia botão i → botão padrão i)
      * @param lx/ly/rx/ry eixos analógicos em [-32768, 32767] (ly/ry no sentido
      *                SDL: negativo = para cima)
      * @param lt/rt gatilhos em [0, 32767]

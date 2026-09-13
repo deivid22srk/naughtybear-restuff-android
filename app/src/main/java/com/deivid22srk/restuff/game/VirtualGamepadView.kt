@@ -23,11 +23,12 @@ import kotlin.math.min
  * suaves. Nada de gamepad "desenhado": só o essencial para jogar sem pad.
  *
  * Layout (frações da tela, landscape):
- *   - direita-baixo : cluster ABXY
- *   - esquerda-baixo: analógico (thumbstick com mola)
- *   - topo          : LB/RB (pílulas) e LT/RT (gatilhos nas bordas)
- *   - centro        : Back/Start (círculos pequenos)
- *   - centro-baixo  : D-pad compacto (8 direções via ângulo)
+ *   - esquerda-baixo : analógico esquerdo (L — movimento)
+ *   - direita-centro : analógico direito  (R — câmera)
+ *   - direita-baixo  : cluster ABXY
+ *   - topo           : LB/RB (pílulas) e LT/RT (gatilhos nas bordas)
+ *   - centro         : Back/Start (círculos pequenos)
+ *   - centro-baixo   : D-pad compacto (8 direções via ângulo)
  *
  * Multi-touch real: cada ponteiro é atribuído ao controle sob ele no
  * ACTION_DOWN/POINTER_DOWN e liberado no UP/POINTER_UP/POINTER_CANCEL.
@@ -42,7 +43,7 @@ class VirtualGamepadView(
     context: Context,
     private var opacity: Float,
     private var scale: Float,
-    private val haptics: Boolean,
+    private var haptics: Boolean,
 ) : View(context) {
 
     // ------------------------------------------------------------------
@@ -57,8 +58,19 @@ class VirtualGamepadView(
         val cx: Float, // fração da largura (0..1)
         val cy: Float, // fração da altura (0..1)
         val radius: Float, // fração da menor dimensão
-        val bit: Int, // bit no bitmask (BUTTON/TRIGGER: rt usa bit 15)
+        val bit: Int, // bit no bitmask (BUTTON/TRIGGER)
     )
+
+    /** Toque ativo em um analógico (polegar preso ao anel, com mola). */
+    private class StickTouch(
+        val pointerId: Int,
+        val centerX: Float,
+        val centerY: Float,
+        val radiusPx: Float,
+    ) {
+        var thumbX = 0f // px, offset do centro
+        var thumbY = 0f
+    }
 
     private companion object {
         // Bits compatíveis com android_main.cpp — ORDEM CANÔNICA do enum
@@ -83,7 +95,10 @@ class VirtualGamepadView(
         val s = scale.coerceIn(0.7f, 1.6f)
         val small = min(width, height).toFloat()
         val r = { f: Float -> f * small * s }
-        // Coordenadas normalizadas pensadas para landscape (wide).
+        // Coordenadas normalizadas pensadas para landscape (wide). O stick
+        // direito (câmera) fica entre o D-pad e o cluster ABXY: 4 agrupamentos
+        // equilibrados (0.135 / 0.385 / 0.615 / 0.885) — o polegar direito
+        // alterna entre R e ABXY como num pad físico.
         return listOf(
             Pad("A", Kind.BUTTON, 0.885f, 0.80f, r(0.075f), BIT_A),
             Pad("B", Kind.BUTTON, 0.940f, 0.68f, r(0.075f), BIT_B),
@@ -96,6 +111,7 @@ class VirtualGamepadView(
             Pad("BACK", Kind.BUTTON, 0.425f, 0.86f, r(0.048f), BIT_BACK),
             Pad("START", Kind.BUTTON, 0.575f, 0.86f, r(0.048f), BIT_START),
             Pad("STICK", Kind.STICK, 0.135f, 0.66f, r(0.145f), BIT_LS),
+            Pad("RSTICK", Kind.STICK, 0.615f, 0.60f, r(0.145f), BIT_RS),
             Pad("DPAD", Kind.DPAD, 0.385f, 0.62f, r(0.105f), BIT_DUP),
         )
     }
@@ -116,12 +132,8 @@ class VirtualGamepadView(
     private var rx = 0
     private var ry = 0
 
-    private var stickPointer = -1
-    private var stickThumbX = 0f // px, offset do centro
-    private var stickThumbY = 0f
-    private var stickCenterX = 0f
-    private var stickCenterY = 0f
-    private var stickRadiusPx = 1f
+    private var stickL: StickTouch? = null
+    private var stickR: StickTouch? = null
 
     private val pointerButton = SparseIntArrayCompat() // pointerId -> bit/controle
 
@@ -168,7 +180,10 @@ class VirtualGamepadView(
             val cy = c.cy * viewH
             val r = c.radius
             when (c.kind) {
-                Kind.STICK -> drawStick(canvas, cx, cy, r, base)
+                Kind.STICK -> {
+                    val st = if (c.id == "STICK") stickL else stickR
+                    drawStick(canvas, c, st, base)
+                }
                 Kind.DPAD -> drawDpad(canvas, cx, cy, r, base)
                 else -> drawRoundButton(canvas, cx, cy, r, c, base)
             }
@@ -191,6 +206,12 @@ class VirtualGamepadView(
             canvas.drawRoundRect(RectF(cx - r, top, cx + r, cy + r), r, r, fillPaint)
             strokePaint.alpha = (a * 255).toInt()
             canvas.drawRoundRect(RectF(cx - r, cy - r, cx + r, cy + r), r, r, strokePaint)
+            // Rótulo do gatilho (bug reportado: LT/RT não desenhavam texto).
+            textPaint.color = Color.WHITE
+            textPaint.alpha = (base * 235).toInt()
+            val ts = r * 0.62f
+            textPaint.textSize = ts
+            canvas.drawText(c.id, cx, cy + ts * 0.35f, textPaint)
             return
         }
 
@@ -214,19 +235,29 @@ class VirtualGamepadView(
         canvas.drawText(label, cx, cy + ts * 0.35f, textPaint)
     }
 
-    private fun drawStick(canvas: Canvas, cx: Float, cy: Float, r: Float, base: Float) {
+    private fun drawStick(canvas: Canvas, pad: Pad, st: StickTouch?, base: Float) {
+        val cx = pad.cx * viewW
+        val cy = pad.cy * viewH
+        val r = pad.radius
         // Zona externa: anel discreto.
         strokePaint.color = Color.WHITE
         strokePaint.alpha = (base * 150).toInt()
         canvas.drawCircle(cx, cy, r, strokePaint)
         strokePaint.alpha = (base * 60).toInt()
         canvas.drawCircle(cx, cy, r * 0.62f, strokePaint)
-        // Polegar.
+        // Marca discreta L/R no centro do anel: identifica qual analógico é.
+        textPaint.color = Color.WHITE
+        textPaint.alpha = (base * 110).toInt()
+        textPaint.textSize = r * 0.34f
+        canvas.drawText(if (pad.id == "STICK") "L" else "R", cx, cy + r * 0.12f, textPaint)
+        // Polegar (mola: fica no centro quando sem toque).
         fillPaint.color = Color.WHITE
         fillPaint.alpha = (base * 90).toInt()
-        canvas.drawCircle(stickCenterX + stickThumbX, stickCenterY + stickThumbY, r * 0.42f, fillPaint)
+        val tx = cx + (st?.thumbX ?: 0f)
+        val ty = cy + (st?.thumbY ?: 0f)
+        canvas.drawCircle(tx, ty, r * 0.42f, fillPaint)
         strokePaint.alpha = (base * 200).toInt()
-        canvas.drawCircle(stickCenterX + stickThumbX, stickCenterY + stickThumbY, r * 0.42f, strokePaint)
+        canvas.drawCircle(tx, ty, r * 0.42f, strokePaint)
     }
 
     private fun drawDpad(canvas: Canvas, cx: Float, cy: Float, r: Float, base: Float) {
@@ -276,17 +307,17 @@ class VirtualGamepadView(
     }
 
     private fun assignPointer(pointerId: Int, x: Float, y: Float) {
-        // Stick tem prioridade (zona maior).
+        // Analógicos têm prioridade (zonas maiores).
         for (c in controlsCache) {
-            if (c.kind == Kind.STICK) {
-                val cx = c.cx * viewW; val cy = c.cy * viewH
-                if (hypot(x - cx, y - cy) <= c.radius * 1.25f) {
-                    stickPointer = pointerId
-                    stickCenterX = cx; stickCenterY = cy
-                    stickRadiusPx = c.radius * 0.62f
-                    movePointer(pointerId, x, y)
-                    return
-                }
+            if (c.kind != Kind.STICK) continue
+            val occupied = if (c.id == "STICK") stickL != null else stickR != null
+            if (occupied) continue
+            val cx = c.cx * viewW; val cy = c.cy * viewH
+            if (hypot(x - cx, y - cy) <= c.radius * 1.25f) {
+                val st = StickTouch(pointerId, cx, cy, c.radius * 0.62f)
+                if (c.id == "STICK") stickL = st else stickR = st
+                movePointer(pointerId, x, y)
+                return
             }
         }
         // Botão mais próximo dentro do raio.
@@ -330,34 +361,53 @@ class VirtualGamepadView(
     }
 
     private fun movePointer(pointerId: Int, x: Float, y: Float) {
-        if (pointerId == stickPointer) {
-            var dx = x - stickCenterX
-            var dy = y - stickCenterY
-            val len = hypot(dx, dy)
-            if (len > stickRadiusPx) {
-                dx = dx / len * stickRadiusPx
-                dy = dy / len * stickRadiusPx
-            }
-            stickThumbX = dx; stickThumbY = dy
-            lx = (dx / stickRadiusPx * 32767f).toInt().coerceIn(-32768, 32767)
-            ly = (dy / stickRadiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+        val st = stickL?.takeIf { it.pointerId == pointerId }
+            ?: stickR?.takeIf { it.pointerId == pointerId }
+            ?: return
+        var dx = x - st.centerX
+        var dy = y - st.centerY
+        val len = hypot(dx, dy)
+        if (len > st.radiusPx) {
+            dx = dx / len * st.radiusPx
+            dy = dy / len * st.radiusPx
+        }
+        st.thumbX = dx; st.thumbY = dy
+        if (stickL === st) {
+            lx = (dx / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+            ly = (dy / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
             // Pressionar o stick (L3) só com "clique" não é detectável em touch —
             // LS fica ativo enquanto o polegar está deslocado (padrão em ports).
             setButtonBit(BIT_LS, abs(lx) > 8000 || abs(ly) > 8000)
-            fire()
-            invalidate()
+        } else {
+            rx = (dx / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+            ry = (dy / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+            // RS (R3) NÃO é auto-ativado: em console o clique do analógico
+            // direito costuma ser "reset de câmera" — dispará-lo a cada pan
+            // lutaria contra o jogador. Sem análogo touch para clique real.
         }
+        fire()
+        invalidate()
     }
 
     private fun releasePointer(pointerId: Int) {
-        if (pointerId == stickPointer) {
-            stickPointer = -1
-            stickThumbX = 0f; stickThumbY = 0f
-            lx = 0; ly = 0
-            setButtonBit(BIT_LS, false)
-            fire()
-            invalidate()
-            return
+        stickL?.let {
+            if (it.pointerId == pointerId) {
+                stickL = null
+                lx = 0; ly = 0
+                setButtonBit(BIT_LS, false)
+                fire()
+                invalidate()
+                return
+            }
+        }
+        stickR?.let {
+            if (it.pointerId == pointerId) {
+                stickR = null
+                rx = 0; ry = 0
+                fire()
+                invalidate()
+                return
+            }
         }
         val bit = pointerButton.get(pointerId, -1)
         if (bit >= 0) {
@@ -373,8 +423,8 @@ class VirtualGamepadView(
     }
 
     private fun releaseAll() {
-        stickPointer = -1
-        stickThumbX = 0f; stickThumbY = 0f
+        stickL = null
+        stickR = null
         lx = 0; ly = 0; rx = 0; ry = 0; lt = 0; rt = 0
         for (i in buttons.indices) buttons[i] = 0
         pointerButton.clear()
@@ -393,7 +443,6 @@ class VirtualGamepadView(
         for (i in 0 until 15) {
             if (buttons[i] != 0) mask = mask or (1 shl i)
         }
-        // Direções do D-pad derivadas do stick? Não: D-pad é botão dedicado.
         NativeBridge.nativeSetVirtualPadState(mask, lx, ly, rx, ry, lt, rt)
     }
 
@@ -412,7 +461,7 @@ class VirtualGamepadView(
     }
 
     // ------------------------------------------------------------------
-    // Config dinâmica
+    // Config dinâmica (aplicada ao vivo pelo diálogo de ajustes rápidos)
     // ------------------------------------------------------------------
 
     fun setOpacity(v: Float) {
@@ -424,6 +473,10 @@ class VirtualGamepadView(
         scale = v.coerceIn(0.7f, 1.6f)
         controlsCache = controls(viewW.toInt(), viewH.toInt())
         invalidate()
+    }
+
+    fun setHaptics(v: Boolean) {
+        haptics = v
     }
 
     fun shutdown() {
