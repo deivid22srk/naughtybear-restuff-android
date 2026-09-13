@@ -1,6 +1,6 @@
 # Changelog — naughtybear-restuff-android
 
-## v1.1.0 — feat(vortek): driver Vulkan Vortek + redesign da UI + instrumentação de performance (branch feat/vortek-driver-icone)
+## v1.1.0 — feat(vortek): driver Vulkan Vortek + redesign da UI + controles de toque + limitador de FPS real (branch feat/vortek-driver-icone)
 
 Primeira release assinada com keystore de **release** dedicado (`keystore/release.keystore`,
 via `.github/workflows/release.yml`). Builds anteriores de CI usavam a assinatura de debug —
@@ -24,6 +24,15 @@ veja o aviso de instalação no fim desta seção.
 | **Crash (SIGSEGV) ao iniciar o jogo** com Vortek ativado (log pastebin `uYKCijUd`) | `VK_KHR_swapchain` era removida da criação do device do host (skip list legada do modo X11 sintético do upstream) → `vkGetDeviceProcAddr` devolvia NULL → chamada de ponteiro NULL no primeiro `vkCreateSwapchainKHR` | Extensão fora da skip list + guards anti-NULL na família swapchain + `vkGetPhysicalDevicePresentRectanglesKHR` reescrito como passthrough real |
 | **Renderização corrompida com Vortek** (log4.zip: gameplay + logs) — triângulos gigantes sólidos, malhas 3D ausentes, strobing em transições | Vertex fetch `USCALED PACK32 10-10-10-2` (formato de posição/normal do Xenos, o mais comum em jogos Xbox 360) não era convertido pelo Vortek → pipeline criado com vertex fetch sem suporte no Adreno → rasterização indefinida. 2D/título renderizavam OK (formatos planos, cobertos pelo rewrite SPIR-V existente) — consistente com o vídeo | Conversão USCALED/SSCALED da família PACK32 (A2B10G10R10/A2R10G10B10/A8B8G8R8) + signedness correta no rewrite SPIR-V; fence-wait robusto (fds inicializados, fallback de espera real no servidor, status propagado); índice devolvido também em `VK_SUBOPTIMAL_KHR` (framebuffer OOB em transições). Teste unitário host (21 checagens) no CI |
 
+### Controles de toque, limitador de FPS e orientação (gameplay)
+
+| # | Item | O que é | Valor no Android |
+|---|---|---|---|
+| 6 | **Gamepad virtual completo** | **Stick analógico direito** (câmera/aim), rótulos **LT/RT** nos gatilhos, e o botão Voltar agora pede confirmação ("voltar à tela inicial?") — nada de sair do jogo por engano | Paridade de fato com o gamepad físico |
+| 7 | **Painel de ajuste rápido (toque com 4 dedos)** | Durante o jogo, tocar com 4 dedos abre o painel: overlay on/off, **opacidade**, **tamanho dos controles**, vibração, contador de FPS e **limite de FPS ao vivo (chips 30–120)**. Layout v2: cabeçalho fixo + conteúdo em ScrollView + rodapé fixo (botões sempre acessíveis mesmo em landscape), salvamento com debounce no dismiss e flush no `onStop` — nenhuma preferência se perde | Ajuste sem sair do jogo, como num console |
+| 8 | **Limitador de FPS que limita de verdade** | O cap (30/60/…/120) passou a ser aplicado no **present thread do host** (lê o cvar a cada iteração — antes o paceamento era fixo em ~60Hz hardcoded, ignorando a configuração) e também no guest (`on_swap`); espelho `g_rexrestuff_live_fps_cap` re-aplicado pós-LoadConfig + priming no `onCreate` garante que as preferências da sessão sempre vencem o toml | O contador de FPS da UI reflete o cap real; menos consumo e thermal |
+| 9 | **Landscape travado durante o jogo** | A UI Kotlin continua girando normalmente (portrait/landscape); ao **iniciar o jogo** a orientação trava em `SENSOR_LANDSCAPE` (override do `setOrientationBis` do SDL, que destruía o lock do manifest via JNI) e é liberada ao voltar à tela inicial | Experiência de console — sem giro acidental para portrait no gameplay |
+
 ### Como usar o Vortek
 
 1. **Configurações → GPU Drivers → Vortek (experimental)**.
@@ -46,7 +55,8 @@ futuras instalam por cima sem desinstalar.
 ### Validação
 
 - Loop de avaliação independente por tarefa: ENOENT 7.5 → 9.2; crash do swapchain 9/10;
-  renderização 8.3 + follow-ups (UB, vazamento, guards, família A8B8G8R8) — findings aplicados
+  renderização 8.3 + follow-ups (UB, vazamento, guards, família A8B8G8R8); controles de
+  toque/limitador/landscape 8.0 → 8.6 → **9.2/10** — findings aplicados
   no mesmo branch.
 - CI: testes de unidade Kotlin (12, ENOENT + self-heal), round-trip do protocolo Vortek (8
   checagens, incl. `vkQueuePresentKHR`), teste de conversão de formatos vertex (21 checagens)
