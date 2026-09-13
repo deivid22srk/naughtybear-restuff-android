@@ -8,6 +8,11 @@ set(WARNS "-Wall -Wno-discarded-qualifiers")
 # NDK (o modo Xlib do upstream não existe num app Android puro).
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 ${WARNS} -DVK_USE_PLATFORM_ANDROID_KHR")
 
+# Headers Vulkan BUNDLED em include/vulkan/ + include/vk_video/ (Khronos,
+# Apache-2.0 — ver include/vulkan/LICENSE-HEADERS.txt): os do sysroot do NDK
+# (r27) são mais antigos que os exigidos pelo vortek_serializer.h upstream
+# (ex.: VK_EXT_map_memory_placed). O -Iinclude resolve <vulkan/vulkan.h> para
+# a cópia bundled ANTES do sysroot — mesma cópia que o vortekrenderer usa.
 include_directories(include)
 
 add_library(vulkan_vortek SHARED

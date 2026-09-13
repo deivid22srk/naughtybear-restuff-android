@@ -56,6 +56,11 @@ in-process by `libvortekrenderer.so` (see `../vortekrenderer/`):
    already exist upstream).
 6. **`CMakeLists.txt`** — builds as `libvulkan_vortek.so` for Android with
    `-DVK_USE_PLATFORM_ANDROID_KHR`.
+7. **`include/vulkan/` + `include/vk_video/`** — Vulkan headers (Khronos,
+   Apache-2.0) BUNDLED: the NDK r27 sysroot headers are older than what the
+   upstream `vortek_serializer.h` requires (`VK_EXT_map_memory_placed` etc.).
+   Same header copy the vortekrenderer uses (VK_HEADER_VERSION 302), plus
+   `vk_icd.h`/`vk_layer.h`. Found by CI on the first build of this branch.
 
 Upstream merges should diff against the files above; everything else is
 byte-identical to the upstream commit.
