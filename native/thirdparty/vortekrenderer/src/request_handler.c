@@ -2071,7 +2071,7 @@ void vt_handle_vkGetPhysicalDeviceSurfacePresentModesKHR(VkContext* context) {
 void vt_handle_vkCreateSwapchainKHR(VkContext* context) {
     uint64_t deviceId;
     VkSwapchainCreateInfoKHR createInfo = {0};
-    uint64_t surfaceId;
+    uint64_t surfaceId = 0; // 16-e2: higiene — campo inline no wire, mas init explícito
     createInfo.surface = (VkSurfaceKHR)&surfaceId;
 
     vt_unserialize_vkCreateSwapchainKHR((VkDevice)&deviceId, &createInfo, NULL, NULL, context->inputBuffer, &context->memoryPool);

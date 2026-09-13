@@ -64,3 +64,12 @@ in-process by `libvortekrenderer.so` (see `../vortekrenderer/`):
 
 Upstream merges should diff against the files above; everything else is
 byte-identical to the upstream commit.
+
+## Protocol round-trip test (CI)
+
+`tests/` carries a host-side round-trip harness (added per review 16-e2):
+`roundtrip_client.c` serializes in client mode, `roundtrip_server.c`
+unserializes in server mode (`-DVT_SERVER`, with the minimal
+`tests/hoststub/` jni/android stubs) and `roundtrip_main.c` asserts the
+values — the exact wire format both sides must agree on. It runs in CI
+**before** the Android build and would have caught the 16-e1 desync bugs.

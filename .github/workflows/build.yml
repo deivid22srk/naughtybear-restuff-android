@@ -53,6 +53,28 @@ jobs:
       - name: Host codegen (rexglue CLI + Default.xex)
         run: bash scripts/build_host_codegen.sh
 
+      # Round-trip do protocolo Vortek (avaliação 16-e2): serializa no TU
+      # cliente e unserializa no TU servidor — pega a classe de bug "mudou
+      # só um lado do par serializador" (os bugs 16-e1) em segundos, ANTES
+      # do build Android de ~45min.
+      - name: Vortek protocol round-trip test (host)
+        run: |
+          set -e
+          V=native/thirdparty/vortek
+          R=native/thirdparty/vortekrenderer
+          mkdir -p build/rt
+          gcc -c -O1 -Wall -DVK_USE_PLATFORM_ANDROID_KHR -I"$V/include" \
+            "$V/tests/roundtrip_client.c" -o build/rt/client.o
+          gcc -c -O1 -Wall -DVK_USE_PLATFORM_ANDROID_KHR -DVT_SERVER=1 -D_GNU_SOURCE \
+            -I"$R/include" -I"$R/winlator/include" -I"$V/tests/hoststub" \
+            "$V/tests/roundtrip_server.c" -o build/rt/server.o
+          gcc -c -O1 -Wall -I"$V/tests" "$V/tests/roundtrip_main.c" -o build/rt/main.o
+          gcc -c -O1 -DVK_USE_PLATFORM_ANDROID_KHR -I"$V/include" "$V/src/vk_object.c" -o build/rt/vk_object.o
+          gcc -c -O1 -I"$V/include" "$V/src/arrays.c" -o build/rt/arrays.o
+          gcc -O1 build/rt/client.o build/rt/server.o build/rt/main.o \
+            build/rt/vk_object.o build/rt/arrays.o -lpthread -o build/rt/roundtrip
+          ./build/rt/roundtrip
+
       - name: Native Android build (librestuff.so)
         run: bash scripts/build_android_native.sh
 
