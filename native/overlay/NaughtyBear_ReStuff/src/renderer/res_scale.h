@@ -140,6 +140,9 @@ ParseResAniso(const char* e, float dflt) {
 // (e3 review) DESCER exige GPU-bound: gpu >= 0.80*busy. Se o teto é o piso de
 // CPU serial (captura+prep), baixar resolução não compra FPS nenhum — só
 // custa imagem. SUBIR é sempre seguro (sobe quando o frame todo folga).
+// (e2 review) LIMITAÇÃO: a razão gpuq/busy é fiel no modo SERIALIZADO (default
+// do Android — o fence serializa CPU×GPU); sob RESTUFF_PIPELINED=1 o prep
+// sobrepõe a GPU e a razão infla, podendo descer sem ganho. Documentado.
 #ifdef __cplusplus
 inline
 #else

@@ -1199,7 +1199,8 @@ struct AthashResult {
 };
 struct AthashArmRec {
   renderer::GuestTextureDesc desc;
-  std::chrono::steady_clock::time_point wanted;
+  std::chrono::steady_clock::time_point wanted;   // last frame that sampled it
+  std::chrono::steady_clock::time_point hashed{};  // last worker hash of it
 };
 struct AthashState {
   std::mutex mu;
@@ -1233,10 +1234,20 @@ bool AthashAllowed() {
 
 void AthashWorkerMain() {
   std::vector<std::pair<uint64_t, renderer::GuestTextureDesc>> jobs;
+  // (e2 review) backoff: only re-hash identities SAMPLed since their last hash
+  // (wanted > hashed). Off-screen textures are by definition not part of any
+  // frame's correctness window, so hashing them was pure idle burn on the
+  // little cores of the exact SoC this targets; when the job list comes back
+  // empty the worker stretches its sleep instead of spinning at 2ms forever.
+  // Detection latency for a sampled texture is unchanged (it is armed every
+  // frame it is drawn, so it is picked up on the next 2ms pass).
+  constexpr auto kActiveSleep = std::chrono::milliseconds(2);
+  constexpr auto kIdleSleep = std::chrono::milliseconds(12);
   while (!g_ath.stop.load(std::memory_order_relaxed)) {
+    bool idle = true;
     {
       std::unique_lock<std::mutex> lk(g_ath.mu);
-      g_ath.cv.wait_for(lk, std::chrono::milliseconds(2));
+      g_ath.cv.wait_for(lk, kActiveSleep);
       if (g_ath.stop.load(std::memory_order_relaxed)) return;
       jobs.clear();
       const auto now = std::chrono::steady_clock::now();
@@ -1248,9 +1259,16 @@ void AthashWorkerMain() {
           it = g_ath.armed.erase(it);
           continue;
         }
-        jobs.emplace_back(it->first, it->second.desc);
+        if (it->second.wanted > it->second.hashed) {
+          it->second.hashed = now;
+          jobs.emplace_back(it->first, it->second.desc);
+        }
         ++it;
       }
+      idle = jobs.empty();
+      // Stretch the sleep while idle (wait_for releases the lock while it
+      // sleeps and reacquires it before returning — no manual unlock).
+      if (idle) g_ath.cv.wait_for(lk, kIdleSleep - kActiveSleep);
     }
     for (const auto& [ident, desc] : jobs) {
       if (g_ath.stop.load(std::memory_order_relaxed)) return;
@@ -1275,11 +1293,13 @@ void AthashArm(uint64_t ident, const renderer::GuestTextureDesc& tex) {
   if (!g_ath.started) {
     g_ath.started = true;
     g_ath.th = std::thread(AthashWorkerMain);
-    REXLOG_INFO("[native_vk] M4.41 async texture verifier started (2ms cadence)");
+    REXLOG_INFO("[native_vk] M4.41 async texture verifier started (2ms cadence, idle backoff)");
   }
   auto& rec = g_ath.armed[ident];
   rec.desc = tex;
   rec.wanted = std::chrono::steady_clock::now();
+  // (e2 review) wake the idle-stretched worker immediately.
+  g_ath.cv.notify_one();
 }
 
 // Present-thread API. Returns the worker's verified hash for `ident` when it
@@ -5653,12 +5673,14 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
 }
 
 // ---- M4.40 (perf/sd695-40fps): DRS — Dynamic Resolution Scaling -------------
+namespace {
 // (e3 review) g_scene_virgin/g_depth_ever used to be function-local statics of
 // RecordTranslatedDraws; promoted to file scope so TeardownSceneAttachments can
 // re-virginize them on a rebuild — otherwise the next main segment opens with
 // LOAD ops over a freshly created (UNDEFINED-layout) image.
 bool g_scene_virgin = true;
 bool g_depth_ever = false;
+}  // namespace
 
 // Field log (log4, SD695/Adreno 619, gameplay): main pass 92-97ms at 100%,
 // fps 8.8-10.6, GPU-bound (FRAMEMS wait~0, SDKMS trk = blocked-on-GPU). Pixel
@@ -5728,13 +5750,21 @@ bool DrsInit() {
     g_drs.target_us = std::clamp(uint32_t(atoi(e)), 10u, 50u) * 1000u;
   uint32_t minp = 40;
   if (const char* e = getenv("RESTUFF_DRS_MIN")) minp = std::clamp(uint32_t(atoi(e)), 25u, 90u);
-  g_drs.min_pct = minp;
+  // (e2 review) the floor can never sit ABOVE the preset: a desktop user with
+  // RESTUFF_RES_SCALE=25 would otherwise see a "descent" step RAISE the scale
+  // to the 40% floor (DrsStepPct clamps to [min..max] = [40..40]). A preset
+  // below the floor makes DRS inert ([25..25]) — which is what was asked.
+  g_drs.min_pct = std::min(minp, ResScalePct());
   // (e3 review) the preset IS the CEILING: a user who chose "Ultra performance
   // 50%" chose not to spend battery rendering above it. DRS adapts DOWN from
   // the preset when heavy and never above it; RESTUFF_DRS_MAX is the explicit
   // experiment override (raises, never lowers; clamped to [min..400]).
+  // (e2 review) "-1" etc. parse to garbage via atoi — only accept > 0.
   uint32_t maxp = ResScalePct();
-  if (const char* e = getenv("RESTUFF_DRS_MAX")) maxp = std::max(maxp, uint32_t(atoi(e)));
+  if (const char* e = getenv("RESTUFF_DRS_MAX")) {
+    const int v = atoi(e);
+    if (v > 0) maxp = std::max(maxp, uint32_t(v));
+  }
   g_drs.max_pct = std::clamp(maxp, g_drs.min_pct, 400u);
   REXLOG_INFO(
       "[native_vk] M4.40 DRS ON: target={}ms range=[{}..{}]% start={}%", g_drs.target_us / 1000,
@@ -5822,10 +5852,14 @@ void DrsControllerWindow(double busy_us_per_present, double gpu_us_per_present,
   g_drs.dir = dir;
   // (e3 review) convergence: at 8-10fps a full agree cycle is ~13-20s per
   // step; when busy is catastrophically above target (>2.5x — exactly the
-  // log4 profile), step immediately instead of waiting for the agreement.
+  // log4 profile), step immediately instead of waiting for the agreement,
+  // with a relaxed present cadence (e2 review: keeping >=45 here saved only
+  // one window; >=20 is ~2.5s at 8fps — bounded by the rebuild's device
+  // wait, which is the real reason not to step every window).
   const bool urgent =
       dir < 0 && busy_us_per_present > double(g_drs.target_us) * 2.5;
-  if ((g_drs.agree >= 2 || urgent) && g_drs.presents >= 45) {
+  const uint64_t presents_needed = urgent ? 20u : 45u;
+  if ((g_drs.agree >= 2 || urgent) && g_drs.presents >= presents_needed) {
     const uint32_t next = DrsStepPct(dir, cur, g_drs.min_pct, g_drs.max_pct);
     if (next != 0u) {
       g_drs.pending.store(next, std::memory_order_relaxed);
@@ -5873,6 +5907,16 @@ bool ApplyDynamicRes(vk::VulkanDevice* dev) {
               std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - t0)
                   .count());
+  // (e2 review) the VRAM clamp inside EnsureSceneTarget may have LOWERED the
+  // scale below what we asked (preset>100 on a small heap). If so, pull the
+  // controller ceiling down to reality — otherwise it re-queues an "up"
+  // step every >=45 presents and each apply pays another device-idle hitch.
+  if (ResScalePct() != want) {
+    g_drs.max_pct = std::clamp(ResScalePct(), g_drs.min_pct, g_drs.max_pct);
+    REXLOG_WARN("[native_vk] M4.40 DRS: VRAM clamp effective scale {}% < requested {}% -- "
+                "ceiling lowered to match",
+                ResScalePct(), want);
+  }
   return true;
 }
 
@@ -11312,7 +11356,8 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
             if (++TL().scene_fail_streak >= 3) {
               TL().scene_fail_latch = true;
               REXLOG_ERROR("[native_vk] M4.40 scene target creation failed {}x in a row -- "
-                           "latching (no more retries; black frames instead of a VRAM leak)",
+                           "latching (no more retries; the last presented frame stays "
+                           "on screen instead of leaking VRAM per attempt)",
                            TL().scene_fail_streak);
             }
           }
