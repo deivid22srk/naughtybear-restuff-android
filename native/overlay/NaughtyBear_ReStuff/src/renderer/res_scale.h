@@ -130,20 +130,29 @@ ParseResAniso(const char* e, float dflt) {
 //
 // Direção que UMA janela de 30 presents "quer": 0 = nada, -1 = baixar, +1 =
 // subir. busy = (cyc - wait) por present em us (trabalho serial — imune ao
-// pacer de menus a 30fps, que estaciona em `wait`); draws/present >= 25 filtra
-// telas triviais. Margens assimétricas (1.30 para descer / 0.72 para subir)
-// porque a evidência de campo (log4, SD695) mostra o main pass a 92-97ms a
-// 100% — o downscale tem que ser agressivo e o upscale conservador.
+// pacer de menus a 30fps, que estaciona em `wait`); gpu = gpuq por present em
+// us (tempo de GPU do frame anterior do slot — o discriminador do gargalo);
+// draws/present >= 25 filtra telas triviais. Margens assimétricas (1.30 para
+// descer / 0.72 para subir) porque a evidência de campo (log4, SD695) mostra o
+// main pass a 92-97ms a 100% — o downscale tem que ser agressivo e o upscale
+// conservador.
+//
+// (e3 review) DESCER exige GPU-bound: gpu >= 0.80*busy. Se o teto é o piso de
+// CPU serial (captura+prep), baixar resolução não compra FPS nenhum — só
+// custa imagem. SUBIR é sempre seguro (sobe quando o frame todo folga).
 #ifdef __cplusplus
 inline
 #else
 static inline
 #endif
 int
-DrsWindowDirection(double busy_us, double draws_per_present, uint32_t cur_pct,
-                   uint32_t target_us, uint32_t min_pct, uint32_t max_pct) {
+DrsWindowDirection(double busy_us, double gpu_us, double draws_per_present,
+                   uint32_t cur_pct, uint32_t target_us, uint32_t min_pct, uint32_t max_pct) {
   if (draws_per_present < 25.0) return 0;
-  if (busy_us > (double)target_us * 1.30 && cur_pct > min_pct) return -1;
+  if (busy_us > (double)target_us * 1.30 && cur_pct > min_pct) {
+    if (gpu_us >= 0.80 * busy_us) return -1;
+    return 0;  // CPU-bound: resolução não é o teto
+  }
   if (busy_us < (double)target_us * 0.72 && cur_pct < max_pct) return 1;
   return 0;
 }

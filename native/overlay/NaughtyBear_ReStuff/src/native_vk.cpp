@@ -1206,11 +1206,13 @@ struct AthashState {
   std::condition_variable cv;
   std::unordered_map<uint64_t, AthashArmRec> armed;    // ident -> desc snapshot
   std::unordered_map<uint64_t, AthashResult> verified;  // ident -> last result
-  std::vector<uint64_t> sweep;                           // idents armed this pass
   std::thread th;
   std::atomic<bool> stop{false};
+  // (e3 review) failed is written by the worker and read by the present
+  // thread -- atomic, like `stop` right above (was a plain bool: benign on
+  // arm64 but a formal data race).
+  std::atomic<bool> failed_at{false};
   bool started = false;
-  bool failed = false;
 };
 AthashState g_ath;
 
@@ -1239,8 +1241,10 @@ void AthashWorkerMain() {
       jobs.clear();
       const auto now = std::chrono::steady_clock::now();
       for (auto it = g_ath.armed.begin(); it != g_ath.armed.end();) {
-        // Sweep idents nobody sampled for 500ms (evicted/retired entries).
+        // Sweep idents nobody sampled for 500ms (evicted/retired entries) and
+        // prune their results too (a stale verified entry only wastes memory).
         if (now - it->second.wanted > std::chrono::milliseconds(500)) {
+          g_ath.verified.erase(it->first);
           it = g_ath.armed.erase(it);
           continue;
         }
@@ -1254,7 +1258,7 @@ void AthashWorkerMain() {
       try {
         h = renderer::GuestTextureContentHash(desc);
       } catch (...) {
-        g_ath.failed = true;  // permanent sync fallback; worker exits quietly
+        g_ath.failed_at.store(true, std::memory_order_relaxed);  // permanent sync fallback
         return;
       }
       const uint32_t fr = DL().frames_rendered.load(std::memory_order_relaxed);
@@ -1266,7 +1270,7 @@ void AthashWorkerMain() {
 
 // Present-thread API. Arms (or refreshes) a texture identity for verification.
 void AthashArm(uint64_t ident, const renderer::GuestTextureDesc& tex) {
-  if (!AthashAllowed() || g_ath.failed) return;
+  if (!AthashAllowed() || g_ath.failed_at.load(std::memory_order_relaxed)) return;
   std::lock_guard<std::mutex> lk(g_ath.mu);
   if (!g_ath.started) {
     g_ath.started = true;
@@ -1281,7 +1285,7 @@ void AthashArm(uint64_t ident, const renderer::GuestTextureDesc& tex) {
 // Present-thread API. Returns the worker's verified hash for `ident` when it
 // was computed at-or-after `min_frame` (the entry's decoded_frame).
 bool AthashFetch(uint64_t ident, uint32_t min_frame, uint64_t& hash_out) {
-  if (!g_ath.started || g_ath.failed) return false;
+  if (!g_ath.started || g_ath.failed_at.load(std::memory_order_relaxed)) return false;
   std::lock_guard<std::mutex> lk(g_ath.mu);
   auto it = g_ath.verified.find(ident);
   if (it == g_ath.verified.end()) return false;
@@ -2433,6 +2437,13 @@ struct TranslatedLayer {
   static constexpr uint32_t kAuxSurfaces = 16;
   AuxSurface aux[kAuxSurfaces];
   bool scene_ready = false;
+  // M4.40 (e3 review): permanent give-up latch for scene-target creation.
+  // EnsureSceneTarget is NOT transactional — a persistent OOM would leak the
+  // partially-created images on every retried frame. Three consecutive
+  // failures stop the retries for good (black frames, loud log) instead of
+  // leaking VRAM per frame on a device that is already out of memory.
+  bool scene_fail_latch = false;
+  uint32_t scene_fail_streak = 0;
   // M3.13: the VdSwap front-buffer pointer that travels with tl.frame -- the
   // display source matching the draws we execute (the live pointer can already
   // belong to the NEXT guest frame; pairing with it flickered).
@@ -5642,6 +5653,13 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
 }
 
 // ---- M4.40 (perf/sd695-40fps): DRS — Dynamic Resolution Scaling -------------
+// (e3 review) g_scene_virgin/g_depth_ever used to be function-local statics of
+// RecordTranslatedDraws; promoted to file scope so TeardownSceneAttachments can
+// re-virginize them on a rebuild — otherwise the next main segment opens with
+// LOAD ops over a freshly created (UNDEFINED-layout) image.
+bool g_scene_virgin = true;
+bool g_depth_ever = false;
+
 // Field log (log4, SD695/Adreno 619, gameplay): main pass 92-97ms at 100%,
 // fps 8.8-10.6, GPU-bound (FRAMEMS wait~0, SDKMS trk = blocked-on-GPU). Pixel
 // count is the dominant cost, so the ONLY lever that holds a frame budget on
@@ -5649,18 +5667,24 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
 // M4.39 host->guest downscale-blits keep the guest byte-compatible. This
 // controller watches the present-cycle BUSY time (cyc - wait: serial work,
 // IMMUNE to the game's 30fps menu pacer, which parks in `wait`) and steps the
-// internal scale so busy <= target. Render passes/pipelines/samplers are
-// size-independent and are NEVER destroyed; only images/views/framebuffers/
-// the resolve bounce are rebuilt.
+// internal scale so busy <= target. Descending additionally requires the GPU
+// to be the binding constraint (gpuq >= 0.80*busy — when the CPU serial floor
+// is the ceiling, resolution buys nothing and only costs image quality).
+// Render passes/pipelines/samplers are size-independent and are NEVER
+// destroyed; only images/views/framebuffers/the resolve bounce are rebuilt.
 //
 // Envs (the Android app passes RESTUFF_DRS=1 by default from Settings):
 //   RESTUFF_DRS=1              opt-in (desktop default off)
 //   RESTUFF_DRS_TARGET_MS=24   busy budget per present (default 24 -> 40fps+)
 //   RESTUFF_DRS_MIN=40         floor, in percent of 1280x720 (25..90)
-//   RESTUFF_DRS_MAX=<pct>      ceiling (default max(boot pct, 100))
+//   RESTUFF_DRS_MAX=<pct>      ceiling override (default: the boot preset —
+//                              "Ultra 50%" never renders above 50%; the env
+//                              can only RAISE it for experiments)
 //   RESTUFF_NO_DRS=1           kill switch (overrides =1)
-// Blockers (parked diagnostics that bake SceneW() into pipelines or read the
-// scene mid-frame): RESTUFF_SCENE_TONE, RESTUFF_MID_DEPTH.
+// Blockers (parked diagnostics that bake SceneW() into pipelines, read the
+// scene mid-frame, or size dump buffers once): RESTUFF_SCENE_TONE,
+// RESTUFF_MID_DEPTH, RESTUFF_DUMP_SCENE, RESTUFF_DUMP_EACH_AUX,
+// RESTUFF_DUMP_AFTER_AUX.
 namespace {
 struct DrsState {
   bool on = false;
@@ -5684,19 +5708,34 @@ bool DrsInit() {
   if (getenv("RESTUFF_DRS") == nullptr) return false;  // opt-in (app default)
   const char* blocker1 = getenv("RESTUFF_SCENE_TONE");
   const char* blocker2 = getenv("RESTUFF_MID_DEPTH");
-  if (blocker1 || blocker2) {
-    REXLOG_WARN("[native_vk] M4.40 DRS OFF: {} bakes the scene size into a pipeline",
-                blocker1 ? "RESTUFF_SCENE_TONE" : "RESTUFF_MID_DEPTH");
+  // (e3 review) scene-dump diagnostics size their capture buffers ONCE with
+  // the boot SceneW()*SceneH() (g_scene_dump_buf) and also read the scene
+  // mid-frame; an upscale step would then copy past the buffer end.
+  const char* blocker3 = getenv("RESTUFF_DUMP_SCENE");
+  const char* blocker4 = getenv("RESTUFF_DUMP_EACH_AUX");
+  const char* blocker5 = getenv("RESTUFF_DUMP_AFTER_AUX");
+  if (blocker1 || blocker2 || blocker3 || blocker4 || blocker5) {
+    REXLOG_WARN("[native_vk] M4.40 DRS OFF: a scene-size-dependent diagnostic is active",
+                blocker1 ? "RESTUFF_SCENE_TONE"
+                : blocker2 ? "RESTUFF_MID_DEPTH"
+                : blocker3 ? "RESTUFF_DUMP_SCENE"
+                : blocker4 ? "RESTUFF_DUMP_EACH_AUX"
+                           : "RESTUFF_DUMP_AFTER_AUX");
     return false;
   }
   g_drs.on = true;
   if (const char* e = getenv("RESTUFF_DRS_TARGET_MS"))
     g_drs.target_us = std::clamp(uint32_t(atoi(e)), 10u, 50u) * 1000u;
-  if (const char* e = getenv("RESTUFF_DRS_MIN"))
-    g_drs.min_pct = std::clamp(uint32_t(atoi(e)), 25u, 90u);
-  uint32_t maxp = 100;
-  if (const char* e = getenv("RESTUFF_DRS_MAX")) maxp = std::clamp(uint32_t(atoi(e)), g_drs.min_pct, 400u);
-  g_drs.max_pct = std::max(maxp, std::min(ResScalePct(), 400u));
+  uint32_t minp = 40;
+  if (const char* e = getenv("RESTUFF_DRS_MIN")) minp = std::clamp(uint32_t(atoi(e)), 25u, 90u);
+  g_drs.min_pct = minp;
+  // (e3 review) the preset IS the CEILING: a user who chose "Ultra performance
+  // 50%" chose not to spend battery rendering above it. DRS adapts DOWN from
+  // the preset when heavy and never above it; RESTUFF_DRS_MAX is the explicit
+  // experiment override (raises, never lowers; clamped to [min..400]).
+  uint32_t maxp = ResScalePct();
+  if (const char* e = getenv("RESTUFF_DRS_MAX")) maxp = std::max(maxp, uint32_t(atoi(e)));
+  g_drs.max_pct = std::clamp(maxp, g_drs.min_pct, 400u);
   REXLOG_INFO(
       "[native_vk] M4.40 DRS ON: target={}ms range=[{}..{}]% start={}%", g_drs.target_us / 1000,
       g_drs.min_pct, g_drs.max_pct, ResScalePct());
@@ -5754,6 +5793,11 @@ void TeardownSceneAttachments(vk::VulkanDevice* dev) {
   // M3.99: the fill set still binds the OLD depth_sample_view -- re-write it
   // lazily against the fresh one (pool/set/layout survive).
   tl.fill_set_written = false;
+  // (e3 review) recorder first-pass flags: the fresh images are UNDEFINED --
+  // the next main segment MUST take the clear pass and skip the M3.99 prefill
+  // (its texelFetch would decimate garbage from the fresh depth image).
+  g_scene_virgin = true;
+  g_depth_ever = false;
   tl.scene_ready = false;
 }
 
@@ -5761,7 +5805,8 @@ void TeardownSceneAttachments(vk::VulkanDevice* dev) {
 // the [FRAMEMS] summary, BEFORE the accumulators reset. The DECISION lives in
 // res_scale.h (DrsWindowDirection/DrsStepPct — pure, host-tested); this keeps
 // only the state machine (agree counter + change cadence).
-void DrsControllerWindow(double busy_us_per_present, double draws_per_present) {
+void DrsControllerWindow(double busy_us_per_present, double gpu_us_per_present,
+                          double draws_per_present) {
   if (!DrsInit()) return;
   ++g_drs.windows;
   g_drs.presents += 30;
@@ -5770,19 +5815,23 @@ void DrsControllerWindow(double busy_us_per_present, double draws_per_present) {
   // nothing about steady state.
   const int dir =
       g_drs.windows > 3
-          ? DrsWindowDirection(busy_us_per_present, draws_per_present, cur, g_drs.target_us,
-                               g_drs.min_pct, g_drs.max_pct)
+          ? DrsWindowDirection(busy_us_per_present, gpu_us_per_present, draws_per_present,
+                               cur, g_drs.target_us, g_drs.min_pct, g_drs.max_pct)
           : 0;
   g_drs.agree = (dir != 0 && dir == g_drs.dir) ? g_drs.agree + 1 : (dir != 0);
   g_drs.dir = dir;
-  // Two agreeing windows + >=45 presents between changes (see DrsStepPct for
-  // the asymmetric step sizes).
-  if (g_drs.agree >= 2 && g_drs.presents >= 45) {
+  // (e3 review) convergence: at 8-10fps a full agree cycle is ~13-20s per
+  // step; when busy is catastrophically above target (>2.5x — exactly the
+  // log4 profile), step immediately instead of waiting for the agreement.
+  const bool urgent =
+      dir < 0 && busy_us_per_present > double(g_drs.target_us) * 2.5;
+  if ((g_drs.agree >= 2 || urgent) && g_drs.presents >= 45) {
     const uint32_t next = DrsStepPct(dir, cur, g_drs.min_pct, g_drs.max_pct);
     if (next != 0u) {
       g_drs.pending.store(next, std::memory_order_relaxed);
-      REXLOG_INFO("[native_vk] M4.40 DRS: busy={:.1f}ms -> res {}% -> {}% queued",
-                  busy_us_per_present / 1000.0, cur, next);
+      REXLOG_INFO("[native_vk] M4.40 DRS: busy={:.1f}ms gpu={:.1f}ms -> res {}% -> {}% queued{}",
+                  busy_us_per_present / 1000.0, gpu_us_per_present / 1000.0, cur, next,
+                  urgent ? " (URGENT)" : "");
       g_drs.agree = 0;
       g_drs.presents = 0;
     }
@@ -10448,7 +10497,12 @@ void RecordSceneFrame(vk::VulkanDevice* dev, VkCommandBuffer cmd,
   bool pending_depth_clear = false;  // M3.58: a guest depth_clear_enable resolve
                                      // was seen -> clear depth at the next main
                                      // segment (the true depth-pass boundary).
-  static bool scene_virgin = true;  // very first pass must initialize layouts
+  // M4.40 (e3 review): these were function-local statics — a DRS rebuild left
+  // them latched and the next main segment began with LOAD ops over a fresh
+  // UNDEFINED image (validation error + a frame of EDRAM garbage: the game
+  // only repaints what changes). Aliased to the file-scope flags that
+  // TeardownSceneAttachments re-virginizes.
+  bool& scene_virgin = g_scene_virgin;  // very first pass must initialize layouts
   // Clear values: color transparent-black (alpha 1); depth 0.0 = the FAR
   // plane. This title renders 3D with an INVERTED depth range
   // (PA_CL_VPORT_ZSCALE=-1, ZOFFSET=1 -> window z = 1 - clip z) and
@@ -10687,7 +10741,7 @@ void RecordSceneFrame(vk::VulkanDevice* dev, VkCommandBuffer cmd,
     // path (which binds the main depth directly). RESTUFF_NO_AUXDEPTH_FILL=1
     // disables.
     static const bool s_no_fill = getenv("RESTUFF_NO_AUXDEPTH_FILL") != nullptr;
-    static bool s_depth_ever = false;
+    bool& s_depth_ever = g_depth_ever;  // M4.40 (e3 review): reset on DRS rebuild
     const bool m399_fill = !s_no_fill && a && first && recs[i].wants_main_depth &&
                            !recs[i].shared_depth && tl.fill_pipeline != VK_NULL_HANDLE &&
                            s_depth_ever;
@@ -11236,7 +11290,11 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         auto& verts = dl.vertex_scratch;
         verts.clear();
         if (translated) {
-          if (SetupTranslatedLayer(dev) && EnsureSceneTarget(dev)) {
+          // M4.40 (e3 review): fail latch — see TranslatedLayer::scene_fail_latch.
+          const bool scene_ok =
+              !TL().scene_fail_latch && SetupTranslatedLayer(dev) && EnsureSceneTarget(dev);
+          if (scene_ok) {
+            TL().scene_fail_streak = 0;
             // M4.0: everything a pipeline build needs now exists (layout +
             // scene render pass, both guest-independent) -- start replaying
             // the recorded pipeline population while the guest still boots.
@@ -11247,6 +11305,16 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
             g_fm_prep_us += uint64_t(
                 std::chrono::duration_cast<std::chrono::microseconds>(fm_prep_end - fm_prep0)
                     .count());
+          } else if (!TL().scene_fail_latch) {
+            // M4.40 (e3 review): EnsureSceneTarget failed (or Setup did) —
+            // count the streak and latch after 3 to stop the per-frame
+            // leak of partially-created images (see scene_fail_latch).
+            if (++TL().scene_fail_streak >= 3) {
+              TL().scene_fail_latch = true;
+              REXLOG_ERROR("[native_vk] M4.40 scene target creation failed {}x in a row -- "
+                           "latching (no more retries; black frames instead of a VRAM leak)",
+                           TL().scene_fail_streak);
+            }
           }
           // Present quad (fullscreen, D3D NDC, y-up): samples the resolved
           // front buffer inside the swapchain pass. kPremul blend makes it an
@@ -11766,7 +11834,8 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
         // on the same slot.
         {
           static const bool s_no_fm = getenv("RESTUFF_NO_FRAMEMS") != nullptr;
-          if (!s_no_fm && g_fm_n >= 30) {
+          const bool fm_due = g_fm_n >= 30;
+          if (!s_no_fm && fm_due) {
             const double n = double(g_fm_n);
             // 15-e2: reconcile the sdk bucket against the SDK-side paint
             // implementation (vulkan_presenter.cpp [SDKMS]): sdk_paint is the
@@ -11803,12 +11872,18 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
                 g_fm_prep_us / n / 1000.0, g_fm_rec_us / n / 1000.0,
                 g_fm_wb_us / n / 1000.0, g_fm_sdk_us / n / 1000.0, sdk_paint_ms, sdk_dn,
                 g_fm_gpuq_us / n / 1000.0, g_fm_draws / n);
-            // M4.40 (perf/sd695-40fps): DRS controller tick. busy = cyc -
-            // wait = the serial frame work (pacer/menu waits excluded), the
-            // signal that survives a 30fps-limited menu; the tick consumes it
-            // BEFORE the accumulators reset below.
+          }
+          // M4.40 (perf/sd695-40fps): DRS controller tick. (e3 review) ticks
+          // OUTSIDE the log kill-switch -- RESTUFF_NO_FRAMEMS=1 must not
+          // silently freeze DRS. busy = cyc - wait (serial work, immune to the
+          // game's 30fps menu pacer); gpuq feeds the GPU-bound gate that keeps
+          // the controller from paying image quality for nothing when the CPU
+          // is the ceiling. Consumes the accumulators BEFORE they reset below.
+          if (fm_due) {
+            const double n = double(g_fm_n);
             DrsControllerWindow(
                 double(g_fm_cyc_us - std::min(g_fm_cyc_us, g_fm_wait_us)) / n,
+                double(g_fm_gpuq_us) / n,
                 double(g_fm_draws) / n);
             g_fm_cyc_us = g_fm_wait_us = g_fm_fence_us = 0;
             g_fm_prep_us = g_fm_rec_us = g_fm_wb_us = g_fm_sdk_us = 0;

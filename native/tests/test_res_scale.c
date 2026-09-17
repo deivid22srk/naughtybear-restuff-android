@@ -32,10 +32,12 @@ static void expect_aniso(const char* in, float want) {
 }
 
 // M4.40: helpers de checagem do DRS puro (DrsWindowDirection/DrsStepPct).
-static void expect_dir(double busy_us, double draws, uint32_t cur, uint32_t target_us,
-                       uint32_t min_pct, uint32_t max_pct, int want, const char* what) {
+// busy/gpu em us por present; draws/present filtra telas triviais.
+static void expect_dir(double busy_us, double gpu_us, double draws, uint32_t cur,
+                       uint32_t target_us, uint32_t min_pct, uint32_t max_pct, int want,
+                       const char* what) {
   ++checks;
-  int got = DrsWindowDirection(busy_us, draws, cur, target_us, min_pct, max_pct);
+  int got = DrsWindowDirection(busy_us, gpu_us, draws, cur, target_us, min_pct, max_pct);
   if (got != want) {
     ++failures;
     printf("FAIL drs_dir(%s) = %d, esperado %d\n", what, got, want);
@@ -116,23 +118,30 @@ int main(void) {
   expect_aniso("-inf", 4.0f);
 
   // ---- M4.40 (perf/sd695-40fps): decisão DRS ---------------------------
-  // Alvo default 24ms; range default [40..100].
-  // Gameplay pesado do log4: busy ~92-105ms, draws ~500 -> DESCE.
-  expect_dir(100000.0, 500.0, 100, 24000, 40, 100, -1, "pesado@100");
-  expect_dir(100000.0, 500.0, 40, 24000, 40, 100, 0, "pesado preso no piso");
+  // Alvo default 24ms; range default [40..100]. gpu = tempo de GPU por
+  // present (gate do gargalo: descer só quando GPU ≈ busy).
+  // Gameplay pesado do log4: busy ~92-105ms, gpu ~90-100, draws ~500 -> DESCE.
+  expect_dir(100000.0, 95000.0, 500.0, 100, 24000, 40, 100, -1, "pesado GPU-bound@100");
+  expect_dir(100000.0, 95000.0, 500.0, 40, 24000, 40, 100, 0, "pesado preso no piso");
+  // CPU-bound (e3): busy alto mas GPU folga -> NÃO desce (resolução não é o teto).
+  expect_dir(40000.0, 20000.0, 500.0, 100, 24000, 40, 100, 0, "CPU-bound não desce");
+  expect_dir(40000.0, 30000.0, 500.0, 80, 24000, 40, 100, 0, "CPU-bound no meio não desce");
+  // Borda do gate: gpu exatamente 0.80*busy desce (>=).
+  expect_dir(40000.0, 32000.0, 500.0, 100, 24000, 40, 100, -1, "borda 0.80 desce");
+  expect_dir(40000.0, 31999.0, 500.0, 100, 24000, 40, 100, 0, "abaixo de 0.80 não desce");
   // Menu a 30fps: busy ~2ms (o pacer estaciona em wait) -> SOBE.
-  expect_dir(2000.0, 400.0, 50, 24000, 40, 100, 1, "leve sobe do preset");
+  expect_dir(2000.0, 2000.0, 400.0, 50, 24000, 40, 100, 1, "leve sobe do preset");
   // Zona morta (nem 1.30x nem 0.72x do alvo).
-  expect_dir(28000.0, 300.0, 70, 24000, 40, 100, 0, "zona morta");
-  expect_dir(20000.0, 300.0, 70, 24000, 40, 100, 0, "zona morta baixa");
+  expect_dir(28000.0, 27000.0, 300.0, 70, 24000, 40, 100, 0, "zona morta");
+  expect_dir(20000.0, 19000.0, 300.0, 70, 24000, 40, 100, 0, "zona morta baixa");
   // Poucos draws (tela trivial/menu) -> nada mesmo com busy alto.
-  expect_dir(100000.0, 10.0, 100, 24000, 40, 100, 0, "poucos draws");
+  expect_dir(100000.0, 95000.0, 10.0, 100, 24000, 40, 100, 0, "poucos draws");
   // Borda: exatamente 1.30x não desce (>)…
-  expect_dir(31200.0, 300.0, 100, 24000, 40, 100, 0, "exatamente 1.30x");
-  // …e logo acima desce.
-  expect_dir(31201.0, 300.0, 100, 24000, 40, 100, -1, "acima de 1.30x");
+  expect_dir(31200.0, 30000.0, 300.0, 100, 24000, 40, 100, 0, "exatamente 1.30x");
+  // …e logo acima desce (com GPU-bound).
+  expect_dir(31201.0, 31000.0, 300.0, 100, 24000, 40, 100, -1, "acima de 1.30x");
   // Upscale preso no teto.
-  expect_dir(2000.0, 400.0, 100, 24000, 40, 100, 0, "leve preso no teto");
+  expect_dir(2000.0, 2000.0, 400.0, 100, 24000, 40, 100, 0, "leve preso no teto");
 
   // Passos: desce 20 (100->80->60->40), sobe 10, clamp nos limites.
   expect_step(-1, 100, 40, 100, 80, "down 100->80");
