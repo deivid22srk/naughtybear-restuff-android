@@ -195,6 +195,13 @@ class GameActivity : SDLActivity() {
             "--config=$configPath",
             "--log-level=$logLevel",
             "--fps60=${settings.unlock60Fps}",
+            // M4.39 (perf/sd695-ultra): escala interna + aniso via --env=
+            // (lidos pelos statics funcionais do native_vk no boot — ver
+            // android_main.cpp: o pass-through --env= cobre statics de
+            // função; SceneScale/Aniso resolvem no primeiro uso, DEPOIS
+            // do SDL_main, então o override chega a tempo).
+            "--env=RESTUFF_RES_SCALE=${settings.resScale.percent}",
+            "--env=RESTUFF_ANISO=${settings.aniso.value}",
         ) + (logFile?.let { arrayOf("--log-file=$it") } ?: emptyArray())
     }
 
@@ -233,6 +240,14 @@ class GameActivity : SDLActivity() {
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         NativeBridge.ensureLoaded()
+
+        // M4.39 (perf/sd695-ultra): performance sustentada — trava os clocks
+        // num patamar sustentável (evita pico-then-throttle: sem isto o SD695
+        // entrega 30fps por 3 min e depois cai para ~15fps com throttling).
+        // Best-effort por OEM (alguns ignoram o hint) — nunca derruba o boot.
+        if (PortSettingsRepository(this).load().sustainedPerf) {
+            runCatching { window?.setSustainedPerformanceMode(true) }
+        }
 
         // Overlay do virtual gamepad por cima da SDLSurface. A view é SEMPRE
         // criada (visibilidade conforme a preferência): o diálogo de ajustes

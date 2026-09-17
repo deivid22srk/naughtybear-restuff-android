@@ -105,6 +105,19 @@ jobs:
             build/rt/arrays.o -lpthread -o build/rt/unit_formats
           ./build/rt/unit_formats
 
+      # Teste host do parser M4.39 (I1): RESTUFF_RES_SCALE="5"/"10"/"24" deve
+      # voltar a 100% (nunca 400%) — regressão do bug de tela preta via OOM
+      # de attachments por input manual no perf_env.txt. Roda em segundos,
+      # ANTES do build nativo de ~45min.
+      - name: Res-scale/aniso parser test (host)
+        run: |
+          set -e
+          mkdir -p build/rt
+          gcc -O1 -Wall -Wextra -std=c11 \
+            -Inative/overlay/NaughtyBear_ReStuff/src \
+            native/tests/test_res_scale.c -o build/rt/test_res_scale
+          ./build/rt/test_res_scale
+
       - name: Native Android build (librestuff.so)
         run: bash scripts/build_android_native.sh
 

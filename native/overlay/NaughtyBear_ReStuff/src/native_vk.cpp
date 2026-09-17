@@ -45,6 +45,7 @@ static void restuff_cblip_beep() {}
 
 #include "renderer/guest_texture_decode.h"
 #include "renderer/native_backend_vk.h"
+#include "renderer/res_scale.h"  // M4.39: ParseResScalePct/ParseResAniso (testável em host)
 #include "renderer/shader_pipeline.h"
 #include "renderer/texture_mods.h"
 #include "renderer/up_draws.h"
@@ -697,6 +698,14 @@ bool CreateDrawLayer(vk::VulkanProvider& provider) {
   // maxSamplerAllocationCount is about per-texture/dynamic allocation; these
   // are exactly two, created once for the device lifetime, against a limit
   // that is >= 4000. Everything else still uses the borrowed UI samplers.
+  // M4.39 (perf/sd695-ultra): RESTUFF_ANISO=<0|2|4|8|16> — teto de anisotropia
+  // (0 = desligada). Default 4x quando o env está ausente/inválido (era 8x
+  // hardcoded): em Adreno 6xx o custo de filtragem anisotrópica em packs HD
+  // (tex_mods) é direto no fragment shader. Na prática o app Android sempre
+  // envia --env=RESTUFF_ANISO (fresh install 2x, upgrade 8x, presets
+  // 0/2/8) — o default daqui só vale para boot manual sem o launcher.
+  // O app passa o valor do toggle (GameActivity --env=); sem env ou com valor
+  // inválido, 4x (ParseResAniso — regressão host em test_res_scale.c).
   {
     VkSamplerCreateInfo sci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sci.magFilter = VK_FILTER_LINEAR;
@@ -704,9 +713,10 @@ bool CreateDrawLayer(vk::VulkanProvider& provider) {
     sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sci.minLod = 0.0f;
     sci.maxLod = VK_LOD_CLAMP_NONE;  // the whole point: UI samplers pin this to 0
-    if (dev->properties().samplerAnisotropy) {
+    const float want_aniso = ParseResAniso(getenv("RESTUFF_ANISO"), 4.0f);
+    if (dev->properties().samplerAnisotropy && want_aniso >= 1.0f) {
       sci.anisotropyEnable = VK_TRUE;
-      sci.maxAnisotropy = std::min(8.0f, dev->properties().maxSamplerAnisotropy);
+      sci.maxAnisotropy = std::min(want_aniso, dev->properties().maxSamplerAnisotropy);
     }
     sci.addressModeU = sci.addressModeV = sci.addressModeW =
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -4720,35 +4730,45 @@ VkDescriptorSet ResolveTexture(vk::VulkanDevice* dev, const renderer::GuestTextu
 // Geometry reaches us in resolution-independent clip space (the per-draw ndc[]
 // push constant), so enlarging the target supersamples; each resolve then
 // downscale-blits host->guest, keeping resolve contents byte-compatible with
-// what the guest expects. RESTUFF_RES_SCALE=<1..4>; unset (S=1) is
-// byte-identical to pre-M4.38 -- every SceneW() folds back to 1280 and every
-// scale factor below to 1.
+// what the guest expects.
+//
+// M4.39 (perf/sd695-ultra): DOWNSCALE fracionário para GPUs móveis fracas.
+// O Adreno 619 (SD695) leva ~90ms só no main pass a 1280x720 (log de campo:
+// 8-10fps em gameplay, GPU-bound, wait~0ms). Pixel count é quadrático —
+// 0.5x (640x360) tem 1/4 dos pixels, ~1/4 dos attachments (179MB -> ~45MB,
+// cabe melhor no GMEM/tiling do Adreno 6xx) e derruba resolve/aux na mesma
+// proporção. Precedente: UnleashedRecomp-Android default ResolutionScale 0.5
+// no Android; Xendroid/X360-Mobile recomendam travar em 1x (720p) e nunca
+// upscale no mobile.
+//
+// O parsing mora em renderer/res_scale.h (ParseResScalePct — header
+// self-contained com regressão host em native/tests/test_res_scale.c).
+// Aqui só a resolução única (slot atômico) + geometria derivada.
 constexpr uint32_t kGuestW = 1280, kGuestH = 720;
 // Resolved once, on first use, and then possibly LOWERED by the VRAM check in
 // EnsureSceneTarget (which runs before any other caller). Never raised.
+// Slot guarda PORCENTO (100 = 1.0x). 0 = ainda não resolvido.
 inline std::atomic<uint32_t>& ResScaleSlot() {
   static std::atomic<uint32_t> s{0};
   return s;
 }
-inline uint32_t SceneScale() {
+inline uint32_t ResScalePct() {
   auto& slot = ResScaleSlot();
   uint32_t s = slot.load(std::memory_order_relaxed);
   if (s != 0) return s;
-  const char* e = getenv("RESTUFF_RES_SCALE");
-  uint32_t v = e ? uint32_t(strtoul(e, nullptr, 10)) : 1u;
-  if (v < 1u) v = 1u;
-  if (v > 4u) v = 4u;
-  slot.store(v, std::memory_order_relaxed);
-  return v;
+  s = ParseResScalePct(getenv("RESTUFF_RES_SCALE"));
+  slot.store(s, std::memory_order_relaxed);
+  return s;
 }
 // Colour (4 B/px) + D32S8 depth (8 B/px) for the main scene and every aux
 // surface, at the given scale. This is what the scale actually costs.
-inline uint64_t SceneAttachmentBytes(uint32_t s) {
-  return (uint64_t(TranslatedLayer::kAuxSurfaces) + 1ull) * uint64_t(kGuestW * s) *
-         uint64_t(kGuestH * s) * (4ull + 8ull);
+inline uint64_t SceneAttachmentBytes(uint32_t pct) {
+  const uint64_t w = (uint64_t(kGuestW) * pct) / 100u;
+  const uint64_t h = (uint64_t(kGuestH) * pct) / 100u;
+  return (uint64_t(TranslatedLayer::kAuxSurfaces) + 1ull) * w * h * (4ull + 8ull);
 }
-inline uint32_t SceneW() { return kGuestW * SceneScale(); }
-inline uint32_t SceneH() { return kGuestH * SceneScale(); }
+inline uint32_t SceneW() { return (kGuestW * ResScalePct()) / 100u; }
+inline uint32_t SceneH() { return (kGuestH * ResScalePct()) / 100u; }
 // M3.97 STENCIL: the guest STENCIL-MASKS several passes (RB_DEPTHCONTROL bit0;
 // 7% of draws test stencil, 1.7% write it). We previously used a depth-ONLY
 // D32_SFLOAT attachment and never set stencilTestEnable, so every masked pass
@@ -4769,9 +4789,12 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
   // of device-local VRAM. Without this, an over-ambitious RESTUFF_RES_SCALE
   // fails an image allocation, EnsureSceneTarget returns false and the game
   // renders NOTHING -- a far worse outcome than quietly running at a lower
-  // scale. Runs before any other SceneScale() caller, so the lowered value is
+  // scale. Runs before any other ResScalePct() caller, so the lowered value is
   // what the whole renderer sees.
-  if (SceneScale() > 1u) {
+  // M4.39: opera em PORCENTO (25..400) com degraus multiplicativos (~0.8x) —
+  // cobre tanto upscale (400->320->256...) quanto downscale pedido pelo user
+  // (o clamp nunca AUMENTA: só reduz upscale ambicioso).
+  if (ResScalePct() > 100u) {
     VkPhysicalDeviceMemoryProperties mp = {};
     dev->vulkan_instance()->functions().vkGetPhysicalDeviceMemoryProperties(
         dev->physical_device(), &mp);
@@ -4779,17 +4802,20 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
     for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
       if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
         vram += mp.memoryHeaps[i].size;
-    const uint32_t want = SceneScale();
+    const uint32_t want = ResScalePct();
     uint32_t s = want;
-    while (s > 1u && vram && SceneAttachmentBytes(s) > vram / 2) --s;
+    while (s > 100u && vram && SceneAttachmentBytes(s) > vram / 2) s = (s * 4u) / 5u;
+    if (s < 100u) s = 100u;
     if (s != want) {
       REXLOG_WARN(
-          "[native_vk] M4.38 res_scale {} needs ~{} MB of attachments but VRAM is {} MB; "
+          "[native_vk] M4.39 res_scale {} needs ~{} MB of attachments but VRAM is {} MB; "
           "clamped to {}",
           want, SceneAttachmentBytes(want) >> 20, vram >> 20, s);
       ResScaleSlot().store(s, std::memory_order_relaxed);
     }
   }
+  REXLOG_INFO("[native_vk] M4.39 scene target {}x{} (res_scale {}%, guest {}x{})",
+              SceneW(), SceneH(), ResScalePct(), kGuestW, kGuestH);
 
   VkImageCreateInfo img_ci = {};
   img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -5428,8 +5454,8 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
   // colour attachments at 4 B/px plus as many D32S8 depth attachments at 8 B/px,
   // all scaled by S^2. Log it: 16 aux surfaces make S=2 roughly 0.7 GB, which is
   // the number that decides whether a given machine can afford a scale at all.
-  REXLOG_INFO("[native_vk] M2.4 scene target ready ({}x{}, res_scale={}, ~{} MB attachments)",
-              SceneW(), SceneH(), SceneScale(), SceneAttachmentBytes(SceneScale()) >> 20);
+  REXLOG_INFO("[native_vk] M2.4 scene target ready ({}x{}, res_scale={}%, ~{} MB attachments)",
+              SceneW(), SceneH(), ResScalePct(), SceneAttachmentBytes(ResScalePct()) >> 20);
   return true;
 }
 
@@ -5780,7 +5806,10 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
   // 2*p+1), so it is only valid at S=1. Above that the generalized f-factor
   // bounce below handles the downscale instead -- slower, but this path is a
   // perf optimization, not a correctness one.
-  if (s_depth_fill && SceneScale() == 1u && r.src_2x && is_depth &&
+  // M4.39: mesma condição em porcento (==100% ⟺ S==1 do renderer legado;
+  // a escala inteira antiga colapsava 101..199 em 1, então o teste ==1u
+  // aceitaria 1.5x aqui).
+  if (s_depth_fill && ResScalePct() == 100u && r.src_2x && is_depth &&
       tl.depth_fill_pipeline != VK_NULL_HANDLE &&
       src_img == tl.depth_img && rt->is_depth) {
     static const bool df_full_resolve = getenv("RESTUFF_FULL_RESOLVE") != nullptr;
@@ -6006,15 +6035,22 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
                   r.di, r.surf, r.dbg_copyctl);
   }
   // M4.38: source-to-dest ratio. src_2x is the guest's own 2:1 resolve (the
-  // full-res volume/shaft chain); SceneScale() is our internal supersample.
+  // full-res volume/shaft chain); ResScalePct() is our internal scale.
   // They compose: at S=2 a src_2x resolve reads a 4x rect. f == 1 means
   // src rect == dest rect and the plain copy path below still applies, so at
   // S=1 without src_2x nothing here changes.
-  const uint32_t f = (r.src_2x ? 2u : 1u) * SceneScale();
+  // M4.39: fator fracionário (downscale 0.5x => k=0.5). A fórmula inteira
+  // legada colapsava para f=0 abaixo de 100% (rects zerados + plain copy com
+  // coords de guest sobre um target menor = OOB). Com float, S>=1 é
+  // bit-identical ao legado (1/2/3/4/6/8 exatos) e S<1 vira upscale-blit
+  // host->guest pelo mesmo caminho (LINEAR filtra bem nos dois sentidos).
+  const float kResK = float(ResScalePct()) / 100.0f;
+  const float fF = (r.src_2x ? 2.0f : 1.0f) * kResK;
+  const bool need_scale_blit = (fF < 0.999f || fF > 1.001f);
   // M3.115 attempt 1 (REVERTED): blitting the live main D32S8 depth blacked
   // the whole frame (silent driver corruption; no fault logged). Depth
   // downsampling now happens via the 2x-decimating bounce copy below instead.
-  if (f > 1u && !is_depth) {
+  if (need_scale_blit && !is_depth) {
     if (getenv("RESTUFF_OCCRECT")) {
       static std::atomic<int> s_or{40};
       if (s_or.fetch_sub(1, std::memory_order_relaxed) > 0)
@@ -6024,8 +6060,14 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
     }
     PFN_vkCmdBlitImage s_blit_fn = BlitFn(dev);
     if (s_blit_fn) {
-      const uint32_t sx = std::min(f * rx, SceneW()), sy = std::min(f * ry, SceneH());
-      const uint32_t sw = std::min(f * cw, SceneW() - sx), sh = std::min(f * ch, SceneH() - sy);
+      // M4.39: rect fonte = rect guest x fF (arredonda; em S inteiro legado
+      // é exatamente f*rect). Clamp ao scene target em todos os casos.
+      const uint32_t sx = std::min(uint32_t(float(rx) * fF + 0.5f), SceneW());
+      const uint32_t sy = std::min(uint32_t(float(ry) * fF + 0.5f), SceneH());
+      const uint32_t sw =
+          std::min(uint32_t(float(cw) * fF + 0.5f), SceneW() > sx ? SceneW() - sx : 0u);
+      const uint32_t sh =
+          std::min(uint32_t(float(ch) * fF + 0.5f), SceneH() > sy ? SceneH() - sy : 0u);
       VkImageBlit bl = {};
       bl.srcSubresource = {aspect, 0, 0, 1};
       bl.srcOffsets[0] = {int32_t(sx), int32_t(sy), 0};
@@ -6039,14 +6081,19 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
       goto resolve_done;
     }
   }
-  if (f > 1u && is_depth && BlitFn(dev) != nullptr) {
+  if (need_scale_blit && is_depth && BlitFn(dev) != nullptr) {
     // M3.115: depth resolves of the full-res volume chain must 2x-downsample
     // like the colour path -- the plain bounce copied the top-left QUADRANT
     // of the full-res depth into the shaft's 640x360 depth texture, so every
     // depth-based unprojection in the shadow shading worked from zoomed-in
     // positions (camera-motion-coupled drift/cut).
-    const uint32_t sx = std::min(f * rx, SceneW()), sy = std::min(f * ry, SceneH());
-    const uint32_t sw = std::min(f * cw, SceneW() - sx), sh = std::min(f * ch, SceneH() - sy);
+    // M4.39: rect fracionário (igual ao path de cor acima).
+    const uint32_t sx = std::min(uint32_t(float(rx) * fF + 0.5f), SceneW());
+    const uint32_t sy = std::min(uint32_t(float(ry) * fF + 0.5f), SceneH());
+    const uint32_t sw =
+        std::min(uint32_t(float(cw) * fF + 0.5f), SceneW() > sx ? SceneW() - sx : 0u);
+    const uint32_t sh =
+        std::min(uint32_t(float(ch) * fF + 0.5f), SceneH() > sy ? SceneH() - sy : 0u);
     if (tl.ds2x_img == VK_NULL_HANDLE) {
       VkImageCreateInfo ci = {};
       ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -6115,11 +6162,23 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
       goto resolve_done;
     }
   }
+  // M4.39 (I5): o plain copy abaixo usa coords de GUEST sobre a imagem do
+  // scene target. A 100% são idênticas; em downscale (ex.: resolve src_2x a
+  // 50%, onde fF==1.0 cai aqui) o rect guest pode exceder o scene menor —
+  // sem clamp seria leitura OOB (UB de driver). Clampar é identidade no
+  // legado e proteção no downscale. Também protege o resolve_buf
+  // (dimensionado para SceneW×SceneH) no path de bounce.
+  const uint32_t cx = std::min(rx, SceneW()), cy = std::min(ry, SceneH());
+  const uint32_t cw2 = std::min(cw, SceneW() > cx ? SceneW() - cx : 0u);
+  const uint32_t ch2 = std::min(ch, SceneH() > cy ? SceneH() - cy : 0u);
+  // N2: rect inteiramente fora do scene (ex.: resolve à direita a 50%) —
+  // vkCmdCopyImage exige extent > 0; sem nada a copiar, pula o resolve.
+  if (cw2 == 0u || ch2 == 0u) goto resolve_done;
   {
   VkBufferImageCopy region = {};
   region.imageSubresource = {aspect, 0, 0, 1};
-  region.imageOffset = {int32_t(rx), int32_t(ry), 0};
-  region.imageExtent = {cw, ch, 1};
+  region.imageOffset = {int32_t(cx), int32_t(cy), 0};
+  region.imageExtent = {cw2, ch2, 1};
   // M3.129: copy image->image directly instead of bouncing through
   // tl.resolve_buf. The bounce moved every resolve's pixels TWICE and put a
   // full transfer barrier between the halves; with ~23 resolves per frame that
@@ -6137,10 +6196,10 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
   if (!s_force_bounce && !wb_needs_buffer && CopyImageFn(dev)) {
     VkImageCopy ic = {};
     ic.srcSubresource = {aspect, 0, 0, 1};
-    ic.srcOffset = {int32_t(rx), int32_t(ry), 0};
+    ic.srcOffset = {int32_t(cx), int32_t(cy), 0};
     ic.dstSubresource = {aspect, 0, 0, 1};
     ic.dstOffset = {int32_t(rx), int32_t(ry), 0};
-    ic.extent = {cw, ch, 1};
+    ic.extent = {cw2, ch2, 1};
     CopyImageFn(dev)(cmd, src_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rt->image,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
     goto resolve_done;
@@ -9348,7 +9407,9 @@ std::vector<TransDrawRec> PrepareTranslatedDraws(vk::VulkanDevice* dev) {
       // pgen-derived UV would land off-screen. pgen.w is the reciprocal scale
       // the FS multiplies gl_FragCoord by to get back to guest pixels; 1.0 at
       // S=1, so the shader arithmetic is unchanged by default.
-      r.pgen[3] = 1.0f / float(SceneScale());
+      // M4.39: recíproco exato em porcento (1/SceneScale() dividia por ZERO
+      // abaixo de 100%, gerando inf nos shaders).
+      r.pgen[3] = 100.0f / float(ResScalePct());
     }
     // M3.9x: pack each bound texture's fetch-constant EXP_ADJUST (signed) as
     // one byte per slot so the PS can scale fetch results by 2^exp_adjust.
@@ -9724,7 +9785,9 @@ void RecordTranslatedDraws(vk::VulkanDevice* dev, VkCommandBuffer cmd,
   // viewport registers), so the dedup compare stays in guest space and the
   // scale is applied only when handing the rect to Vulkan. At S=1 both are
   // identities and this is the pre-M4.38 code exactly.
-  const float kVpScale = float(SceneScale());
+  // M4.39: escala fracionária (float(SceneScale()) colapsava para 0.0 abaixo
+  // de 100% — viewport zerada = tela preta).
+  const float kVpScale = float(ResScalePct()) / 100.0f;
   float cur_vp[4] = {0.0f, 0.0f, float(kGuestW), float(kGuestH)};
   int32_t cur_sc[4] = {0, 0, int32_t(kGuestW), int32_t(kGuestH)};
   // RESTUFF_SKIP_VS=<hex16,hex16,...> (DIAGNOSTIC): drop draws whose VS hash
@@ -9759,13 +9822,18 @@ void RecordTranslatedDraws(vk::VulkanDevice* dev, VkCommandBuffer cmd,
       std::memcpy(cur_sc, r.sc, sizeof(cur_sc));
       // M4.38: clamp in guest space (the register values' own units) exactly as
       // before, then scale the finished rect up to the host target.
-      const int32_t S = int32_t(SceneScale());
+      // M4.39: scissor fracionário com arredondamento (S inteiro legado era
+      // 0 abaixo de 100% — scissor 1px em tudo = tela preta).
+      const float kSc = float(ResScalePct()) / 100.0f;
       const int32_t gx0 = std::clamp(cur_sc[0], 0, int32_t(kGuestW));
       const int32_t gy0 = std::clamp(cur_sc[1], 0, int32_t(kGuestH));
       const int32_t gx1 = std::clamp(cur_sc[0] + cur_sc[2], gx0, int32_t(kGuestW));
       const int32_t gy1 = std::clamp(cur_sc[1] + cur_sc[3], gy0, int32_t(kGuestH));
-      const int32_t x0 = gx0 * S, y0 = gy0 * S;
-      VkRect2D scissor = {{x0, y0}, {uint32_t((gx1 - gx0) * S), uint32_t((gy1 - gy0) * S)}};
+      const int32_t x0 = int32_t(float(gx0) * kSc + 0.5f);
+      const int32_t y0 = int32_t(float(gy0) * kSc + 0.5f);
+      VkRect2D scissor = {{x0, y0},
+                          {uint32_t(float(gx1 - gx0) * kSc + 0.5f),
+                           uint32_t(float(gy1 - gy0) * kSc + 0.5f)}};
       if (scissor.extent.width == 0) scissor.extent.width = 1;
       if (scissor.extent.height == 0) scissor.extent.height = 1;
       df.vkCmdSetScissor(cmd, 0, 1, &scissor);

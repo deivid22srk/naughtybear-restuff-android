@@ -72,6 +72,8 @@ import kotlinx.coroutines.withContext
 import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.data.GpuDriverManager
 import com.deivid22srk.restuff.settings.FpsLimitOption
+import com.deivid22srk.restuff.settings.ResolutionScaleOption
+import com.deivid22srk.restuff.settings.AnisoOption
 import com.deivid22srk.restuff.settings.PortSettings
 import com.deivid22srk.restuff.settings.PortSettingsViewModel
 import com.deivid22srk.restuff.ui.theme.PortPalette
@@ -212,10 +214,143 @@ fun SettingsScreen(
                 onSettingsChange { it.copy(vblankHz = value.roundToInt()) }
             }
             Text(
-                text = "Relógio de vídeo do motor — ajuste fino para painéis " +
-                    "de alta taxa de atualização.",
+                text = "Relógio de vídeo do motor: o jogo apresenta a cada 2 " +
+                    "vblanks — 120 Hz = até 60fps, 80 Hz = até 40fps. " +
+                    "Combine com o limite acima (ex.: 60 + 120 Hz).",
                 color = PortPalette.textTertiary,
                 style = PortType.rowSub
+            )
+
+            Spacer(Modifier.height(18.dp))
+            SettingLabel("Preset rápido")
+            Spacer(Modifier.height(10.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                PresetChip(
+                    label = "Ultra 50%",
+                    selected = settings.resScale == ResolutionScaleOption.RES_50,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onSettingsChange {
+                            it.copy(
+                                resScale = ResolutionScaleOption.RES_50,
+                                aniso = AnisoOption.OFF,
+                                fpsLimit = FpsLimitOption.FPS_60,
+                                vblankHz = 120,
+                                unlock60Fps = true,
+                                sustainedPerf = true
+                            )
+                        }
+                    }
+                )
+                PresetChip(
+                    label = "Perf 60%",
+                    selected = settings.resScale == ResolutionScaleOption.RES_60,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onSettingsChange {
+                            it.copy(
+                                resScale = ResolutionScaleOption.RES_60,
+                                aniso = AnisoOption.X2,
+                                fpsLimit = FpsLimitOption.FPS_60,
+                                vblankHz = 120,
+                                unlock60Fps = true,
+                                sustainedPerf = true
+                            )
+                        }
+                    }
+                )
+                PresetChip(
+                    label = "Eq. 75%",
+                    selected = settings.resScale == ResolutionScaleOption.RES_75,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onSettingsChange {
+                            it.copy(
+                                resScale = ResolutionScaleOption.RES_75,
+                                aniso = AnisoOption.X2,
+                                fpsLimit = FpsLimitOption.FPS_60,
+                                vblankHz = 120,
+                                unlock60Fps = true,
+                                sustainedPerf = true
+                            )
+                        }
+                    }
+                )
+                PresetChip(
+                    label = "Qual 100%",
+                    selected = settings.resScale == ResolutionScaleOption.RES_100,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onSettingsChange {
+                            it.copy(
+                                resScale = ResolutionScaleOption.RES_100,
+                                aniso = AnisoOption.X8,
+                                fpsLimit = FpsLimitOption.FPS_60,
+                                vblankHz = 120,
+                                unlock60Fps = true,
+                                sustainedPerf = true
+                            )
+                        }
+                    }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Ultra 50% é o padrão em instalações novas: num Adreno " +
+                    "619 a diferença 100%→50% é ~4x menos pixels e attachments " +
+                    "(179 MB → ~45 MB) — o que tira o jogo de ~9fps rumo aos " +
+                    "30-40fps. Quem atualizou mantém 100% até escolher. Vale " +
+                    "no próximo início do jogo.",
+                color = PortPalette.textTertiary,
+                style = PortType.rowSub
+            )
+
+            Spacer(Modifier.height(18.dp))
+            SettingLabel("Resolução interna (GPU)")
+            Spacer(Modifier.height(10.dp))
+            ChoiceChipsRow(
+                options = ResolutionScaleOption.entries.toList(),
+                selected = settings.resScale,
+                label = { it.short }
+            ) { option ->
+                onSettingsChange { it.copy(resScale = option) }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Alvo real: ${settings.resScale.percent}% de 1280x720. " +
+                    "Requer reiniciar o jogo. O maior ganho de FPS do app.",
+                color = PortPalette.textTertiary,
+                style = PortType.rowSub
+            )
+
+            Spacer(Modifier.height(18.dp))
+            SettingLabel("Anisotropia (packs HD)")
+            Spacer(Modifier.height(10.dp))
+            ChoiceChipsRow(
+                options = AnisoOption.entries.toList(),
+                selected = settings.aniso,
+                label = { it.label }
+            ) { option ->
+                onSettingsChange { it.copy(aniso = option) }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Filtragem dos texture packs HD. Requer reiniciar o jogo.",
+                color = PortPalette.textTertiary,
+                style = PortType.rowSub
+            )
+
+            Spacer(Modifier.height(10.dp))
+            ToggleRow(
+                label = "Performance sustentada",
+                subtitle = "Evita superaquecimento e queda de FPS após minutos (pode limitar o pico em flagships)",
+                checked = settings.sustainedPerf,
+                onChange = { checked ->
+                    onSettingsChange { it.copy(sustainedPerf = checked) }
+                }
             )
 
             SectionGap()
@@ -410,6 +545,37 @@ private fun SettingLabel(text: String) {
         color = PortPalette.textSecondary,
         style = PortType.label
     )
+}
+
+/** Chip de preset de performance (largura flexível em Row). */
+@Composable
+private fun RowScope.PresetChip(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val accent = PortBranding.config.accent
+    Box(
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(PortPalette.radiusSm))
+            .background(if (selected) accent else Color.Transparent)
+            .border(
+                1.dp,
+                if (selected) Color.Transparent else PortPalette.ghostBorder,
+                RoundedCornerShape(PortPalette.radiusSm)
+            )
+            .portClickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (selected) PortPalette.onAccent else PortPalette.textSecondary,
+            style = PortType.chip
+        )
+    }
 }
 
 /** Linha de chips selecionáveis com scroll horizontal (nunca corta). */

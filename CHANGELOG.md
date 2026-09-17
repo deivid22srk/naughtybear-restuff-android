@@ -1,5 +1,31 @@
 # Changelog — naughtybear-restuff-android
 
+## perf/sd695-ultra — downscale fracionário + presets SD695 rumo a 40fps (branch perf/sd695-ultra)
+
+Evidência de campo (SD695/Adreno 619, Turnip, log 2026-09-17): gameplay 8-10fps
+com main pass 77-97ms a 1280x720, 436-561 draws/present, wait~0ms (GPU-bound),
+179 MB de attachments, aniso 8x. Gargalo = pixels, não shaders (639 pipelines
+só no prewarm) nem texturas (12 decodes, readfail=0).
+
+| # | Mudança | Efeito esperado no SD695 |
+|---|---|---|
+| 1 | `RESTUFF_RES_SCALE` fracionário (25-400%): 50%=640x360, 60%, 75% (`native_vk.cpp` M4.39 + `GameActivity --env=`; parsing isolado em `renderer/res_scale.h` com regressão host de 50 casos no CI) | ~4x menos pixels/attachments a 50% (179→~45 MB): GPU de ~100ms/frame rumo a ~25-35ms |
+| 2 | Resolve/viewport/scissor/pgen refeitos em float (6 sítios assumiam S inteiro 1..4 — viewport zerada e div/0 em downscale) + clamp do fallback copy | Downscale renderiza correto (upscale-blit LINEAR host→guest; sem OOB) |
+| 3 | `RESTUFF_ANISO` 0/2/4/8 (default 4x sem env, era 8x fixo) | Menos filtragem nos packs HD |
+| 4 | UI Desempenho: presets Ultra 50 / Perf 60 / Eq. 75 / Qual 100 + chips de resolução/aniso + toggle performance sustentada; fresh install abre no Ultra, upgrade preserva 100% (sem downgrade surpresa) | Um toque para 50%+60fps+vblank120 |
+| 5 | Chip de FPS 40, `setSustainedPerformanceMode(true)` (default) | Menos throttle térmico em sessão longa |
+| 6 | Painel 4 dedos mostra resolução/aniso ativas (só mudam com reinício) | Sem confusão "mudei e nada aconteceu" |
+
+Nota honesta: 40fps cravados num Adreno 619 dependem de cena + térmica + driver
+Turnip. O modo 50% tira o gargalo de fill (GPU-bound a 100%) e deve entregar
+~30fps típicos, ~40 em cenas leves com cooler e Turnip recente — a submissão CPU
+(400-500 draws/frame) e o thermal sustentado continuam limitando o teto.
+Flagships sobem para 100% num toque.
+
+Limitação conhecida: passes volumétricos/sun-shaft do chain src_2x foram
+validados a 100%; abaixo disso o fast-path depth-fill desliga (cai no bounce
+geral) e os shafts podem perder fidelidade — se notar, suba para 75%.
+
 ## v1.1.0 — feat(vortek): driver Vulkan Vortek + redesign da UI + controles de toque + limitador de FPS real (branch feat/vortek-driver-icone)
 
 Primeira release assinada com keystore de **release** dedicado (`keystore/release.keystore`,
