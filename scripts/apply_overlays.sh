@@ -103,4 +103,13 @@ do
     replace "$OVERLAY/NaughtyBear_ReStuff/$rel" "$ROOT/restuff/$rel"
 done
 
+# --- NaughtyBear_ReStuff: arquivos novos ------------------------------------
+# M4.39: res_scale.h (parsing testável de RESTUFF_RES_SCALE/ANISO) não existe
+# no upstream — incluído por native_vk.cpp ("renderer/res_scale.h").
+for rel in \
+    src/renderer/res_scale.h
+do
+    addnew "$OVERLAY/NaughtyBear_ReStuff/$rel" "$ROOT/restuff/$rel"
+done
+
 echo "Overlays aplicados com sucesso."

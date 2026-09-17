@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
  *
  * - [QuickSettingsDialog]: painel de ajustes (aberto com 4 dedos em qualquer
  *   ponto da tela): controles na tela, opacidade, tamanho, vibração, LIMITE
- *   DE FPS (chips 30/60/90/120/∞ — aplica ao vivo no cvar fps_cap do motor,
+ *   DE FPS (chips 30/40/60/90/120/∞ — aplica ao vivo no cvar fps_cap do motor,
  *   sem reiniciar) e contador de FPS. Mudanças aplicam AO VIVO (o jogo
  *   continua rodando atrás) e persistem nas mesmas chaves da tela de
  *   Configurações (gravação única no fechamento — debounce).
@@ -228,6 +228,16 @@ class QuickSettingsDialog(
             c, "Contador de FPS", "Quadros por segundo reais do motor, sobre o jogo",
             current.showFpsCounter
         ) { checked -> mutate(current.copy(showFpsCounter = checked)) })
+        // M4.39: resolução/aniso exigem reiniciar (SceneScale resolve uma vez
+        // no boot) — mostra o valor ativo e aponta para as Configurações em
+        // vez de oferecer um controle que não aplicaria ao vivo.
+        addRow(body, TextView(c).apply {
+            text = "Resolução interna: ${current.resScale.short} · Aniso ${current.aniso.label} — " +
+                "para trocar, volte à tela inicial → Configurações → Desempenho " +
+                "(vale no próximo início do jogo)."
+            setTextColor(COL_TEXT_DIM)
+            textSize = 12f
+        })
 
         root.addView(ScrollView(c).apply {
             isFillViewport = false
@@ -394,7 +404,7 @@ class QuickSettingsDialog(
     }
 
     /**
-     * Limite de FPS — chips de seleção única (30/60/90/120/∞), alvo de toque
+     * Limite de FPS — chips de seleção única (30/40/60/90/120/∞), alvo de toque
      * de 48dp. A escolha aplica AO VIVO via cvar fps_cap (JNI): o limiter do
      * guest e o pacing do present thread leem o valor por frame — nada de
      * reiniciar o jogo. Persiste junto com o resto do painel (mesma chave
