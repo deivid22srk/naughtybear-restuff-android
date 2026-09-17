@@ -6514,6 +6514,18 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
   const float kResK = float(ResScalePct()) / 100.0f;
   const float fF = (r.src_2x ? 2.0f : 1.0f) * kResK;
   const bool need_scale_blit = (fF < 0.999f || fF > 1.001f);
+  // M4.39 (I5): o plain copy abaixo usa coords de GUEST sobre a imagem do
+  // scene target. A 100% são idênticas; em downscale (ex.: resolve src_2x a
+  // 50%, onde fF==1.0 cai aqui) o rect guest pode exceder o scene menor —
+  // sem clamp seria leitura OOB (UB de driver). Clampar é identidade no
+  // legado e proteção no downscale. Também protege o resolve_buf
+  // (dimensionado para SceneW×SceneH) no path de bounce.
+  // (Declaradas aqui, ANTES dos blocos de scale-blit com `goto resolve_done`:
+  // C++ proíbe goto de pular a inicialização de variáveis em escopo da função
+  // — erros "cannot jump from this goto statement to its label" do build #91.)
+  const uint32_t cx = std::min(rx, SceneW()), cy = std::min(ry, SceneH());
+  const uint32_t cw2 = std::min(cw, SceneW() > cx ? SceneW() - cx : 0u);
+  const uint32_t ch2 = std::min(ch, SceneH() > cy ? SceneH() - cy : 0u);
   // M3.115 attempt 1 (REVERTED): blitting the live main D32S8 depth blacked
   // the whole frame (silent driver corruption; no fault logged). Depth
   // downsampling now happens via the 2x-decimating bounce copy below instead.
@@ -6629,15 +6641,9 @@ void RecordResolve(vk::VulkanDevice* dev, VkCommandBuffer cmd, const TransDrawRe
       goto resolve_done;
     }
   }
-  // M4.39 (I5): o plain copy abaixo usa coords de GUEST sobre a imagem do
-  // scene target. A 100% são idênticas; em downscale (ex.: resolve src_2x a
-  // 50%, onde fF==1.0 cai aqui) o rect guest pode exceder o scene menor —
-  // sem clamp seria leitura OOB (UB de driver). Clampar é identidade no
-  // legado e proteção no downscale. Também protege o resolve_buf
-  // (dimensionado para SceneW×SceneH) no path de bounce.
-  const uint32_t cx = std::min(rx, SceneW()), cy = std::min(ry, SceneH());
-  const uint32_t cw2 = std::min(cw, SceneW() > cx ? SceneW() - cx : 0u);
-  const uint32_t ch2 = std::min(ch, SceneH() > cy ? SceneH() - cy : 0u);
+  // (M4.39 (I5): as declarações de cx/cy/cw2/ch2 do clamp movidas para antes
+  // dos blocos de scale-blit acima — os `goto resolve_done` não podem pular
+  // inicializações; ver nota ali. O uso continua aqui embaixo.)
   // N2: rect inteiramente fora do scene (ex.: resolve à direita a 50%) —
   // vkCmdCopyImage exige extent > 0; sem nada a copiar, pula o resolve.
   if (cw2 == 0u || ch2 == 0u) goto resolve_done;

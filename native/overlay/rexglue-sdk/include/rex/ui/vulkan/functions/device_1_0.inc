@@ -86,3 +86,7 @@ XE_UI_VULKAN_FUNCTION(vkWaitForFences)
 // nativo do jogo (core 1.0 — sempre exportados pelo vkGetDeviceProcAddr).
 XE_UI_VULKAN_FUNCTION(vkCmdWriteTimestamp)
 XE_UI_VULKAN_FUNCTION(vkGetQueryPoolResults)
+// Port Android (M4.40 DRS): sincronização device-idle antes do teardown/rebuild
+// dos attachments do scene target na mudança de resolução dinâmica do jogo
+// (core 1.0 — sempre exportado pelo vkGetDeviceProcAddr; build #91).
+XE_UI_VULKAN_FUNCTION(vkDeviceWaitIdle)

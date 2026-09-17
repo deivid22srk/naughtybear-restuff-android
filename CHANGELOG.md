@@ -1,5 +1,30 @@
 # Changelog — naughtybear-restuff-android
 
+## fix(build) — erros de compilação do build #91 (branch perf/sd695-40fps)
+
+O run #91 (steps 88/89 do workflow, commit ca99f8c) falhou no "Native Android
+build" com 3 erros no TU do `native_vk.cpp` — os TU host não cobrem o alvo
+Android, e o TU é o overlay `native/overlay/NaughtyBear_ReStuff/src/native_vk.cpp`.
+
+| # | Erro do CI | Causa | Fix |
+|---|---|---|---|
+| 1 | `native_vk.cpp:5893: no member named 'vkDeviceWaitIdle' in 'VulkanDevice::Functions'` | O M4.40 DRS chama `dev->functions().vkDeviceWaitIdle(...)` antes do teardown/rebuild dos attachments, mas a tabela `Functions` do SDK não declarava a função | `device_1_0.inc` do overlay ganha `XE_UI_VULKAN_FUNCTION(vkDeviceWaitIdle)` (core 1.0, sempre resolvível por `vkGetDeviceProcAddr`; o loader do `vulkan_device.cpp` do overlay popula sozinho) |
+| 2-3 | `native_vk.cpp:6548/6629: cannot jump from this goto statement to its label` | Os `goto resolve_done` dos paths de scale-blit pulavam a inicialização de `cx/cy/cw2/ch2` (clamp M4.39-I5), declaradas DEPOIS em escopo de função — proibido em C++ | Declarações hoisted para antes dos blocos de scale-blit (valores idênticos: `rx/ry/cw/ch` não mudam entre os pontos; `std::min`/`SceneW()`/`SceneH()` puros) |
+
+Validação local: mini-TU `g++ -fsyntax-only` com o `.inc` real do overlay
+(positivo compila; negativo sem o membro reproduz o erro exato do CI),
+verificação estrutural goto/declarações (nenhuma declaração em escopo de
+função entre o primeiro goto e o label), balance de chaves OK. Avaliação
+independente: **9/10, seguro para push**.
+
+Follow-up Linux-local (não bloqueia o CI Android): o
+`restuff/sdk-patches/rexglue-sdk-v0.10.0-linux-local.patch` (submódulo
+upstream, imutável daqui) também precisa da linha
+`XE_UI_VULKAN_FUNCTION(vkDeviceWaitIdle)` entre `vkDestroyShaderModule` e
+`vkEndCommandBuffer` para compilar o `native_vk.cpp` no fluxo Linux local —
+e o `librexruntime.so` local pré-construído (hazard de ABI documentado no
+HANDOFF) precisa de rebuild após aplicá-la.
+
 ## perf/sd695-40fps — DRS (resolução dinâmica) + verificação assíncrona de texturas (branch perf/sd695-40fps)
 
 Base: `feat/vortek-driver-icone` + o downscale fracionário M4.39 portado da
