@@ -59,6 +59,9 @@ set(RESTUFF_SOURCES
     "${RESTUFF_SOURCE_DIR}/src/renderer/guest_texture_decode.cpp"
     "${RESTUFF_SOURCE_DIR}/src/renderer/ucode_translator.cpp"
     "${RESTUFF_SOURCE_DIR}/src/renderer/shader_pipeline.cpp"
+    # Port do upstream PC 6b269c1: texture mods — dump TGA + substituição
+    # por content hash (decoder stb no Android, ver overlay texture_mods.cpp)
+    "${RESTUFF_SOURCE_DIR}/src/renderer/texture_mods.cpp"
 )
 
 # ----------------------------------------------------------------------
@@ -121,16 +124,41 @@ target_include_directories(restuff PRIVATE
     "${REXSDK_SOURCE_DIR}/thirdparty/imgui"
     # renderdoc_app.h (native_vk.cpp no branch não-WIN32)
     "${REXSDK_SOURCE_DIR}/include/renderdoc"
+    # stb_image.h — decoder dos texture mods no branch não-WIN32 do
+    # texture_mods.cpp (a cópia canônica do SDK; a do SDL3 é static, sem
+    # conflito de símbolos)
+    "${REXSDK_SOURCE_DIR}/thirdparty/stb"
 )
 
 # Opções de compilação do código recompilado — mesmo conjunto do
 # generated/rexglue.cmake upstream (Android: sem -fasync-exceptions, que é
 # só para SEH Windows; SIMDE emite NEON no arm64).
+#
+# ARM PERF/diagnóstico: -gline-tables-only (era -g0). O crash handler do port
+# (android_main.cpp, _Unwind_Backtrace) imprime "módulo+0xOFFSET" usando a
+# tabela dinâmica (dladdr) — com -g0 esses endereços nunca viram arquivo:linha
+# em lugar nenhum. Com line tables, o build preserva librestuff.so.unstripped
+# (o APK recebe a lib stripada via llvm-strip --strip-debug no
+# scripts/build_android_native.sh; o CI upa os símbolos como artefato separado
+# "naughtybear-restuff-debug-symbols") e qualquer backtrace de produção se
+# resolve OFFLINE com llvm-symbolizer contra esse artefato. Custo medido:
+# +85MB apenas no artefato de símbolos — zero no APK e zero em runtime (as
+# seções .debug_* não são mapeadas pelo loader). Flag clang-only: g++ não
+# conhece o nível (verificado) — o generator expr recai em -g0 no GCC.
+# -fno-omit-frame-pointer abaixo mantém o unwind caminhável.
 target_compile_options(restuff PRIVATE
-    $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-g0>
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-gline-tables-only>
+    $<$<CXX_COMPILER_ID:GNU>:-g0>
     -Wno-unused-parameter
     -Wno-unused-variable
 )
+
+# Port Android: frame pointers preservados — o crash handler nativo
+# (android_main.cpp, _Unwind_Backtrace) depende deles para produzir backtraces
+# úteis em Release. Custo de registro (~1%), irrisório para um port.
+if(ANDROID)
+    target_compile_options(restuff PRIVATE -fno-omit-frame-pointer)
+endif()
 
 # rex::runtime traz rexcore/rexfilesystem/rexaudio/rexinput (e SDL3).
 # rex::ui é OBJECT library (window_sdl, imgui_drawer, overlay dialogs

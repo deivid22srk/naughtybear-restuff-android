@@ -11,10 +11,11 @@ import kotlinx.coroutines.flow.asStateFlow
  * único ponto de mutação ([update]) que já persiste em disco — a UI apenas
  * emite transformações puras:
  *
- *     onAspectChange = { opt -> vm.update { it.copy(aspectRatio = opt) } }
+ *     onFpsLimitChange = { opt -> vm.update { it.copy(fpsLimit = opt) } }
  *
- * Para plugar no motor do port: observe [settings] e repasse cada campo ao
- * engine (veja o README, seção "Conectando as configurações").
+ * O consumo é feito pelo [com.deivid22srk.restuff.game.GameActivity]:
+ * os campos do motor viram cvars do restuff.toml/argv no boot do jogo, e
+ * os de controles alimentam o VirtualGamepadView (ver PortSettings.kt).
  */
 class PortSettingsViewModel(application: Application) : AndroidViewModel(application) {
 

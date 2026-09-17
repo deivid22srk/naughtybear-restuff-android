@@ -34,6 +34,7 @@
 #endif
 #if REX_PLATFORM_ANDROID
 #include <spdlog/sinks/android_sink.h>
+#include <android/log.h>
 #endif
 
 REXCVAR_DEFINE_STRING(log_level, "info", "Log",
@@ -72,6 +73,73 @@ bool g_early_initialized = false;
 bool g_initialized = false;
 std::mutex g_mutex;
 LogConfig g_config;
+
+#if REX_PLATFORM_ANDROID
+// Port Android (naughtybear-restuff-android): sink logcat que FATIA mensagens
+// longas. O logd trunca cada entrada em ~4068 bytes (LOGGER_ENTRY_MAX_PAYLOAD)
+// e o android_sink do spdlog entrega a string inteira numa única chamada —
+// stack traces e dumps de shaders saíam MUTILADOS no logcat (o arquivo em
+// disco continuava íntegro, mas o canal imediato de diagnóstico não).
+// Este sink divide a mensagem formatada em blocos de ~3500 bytes com sufixo
+// (i/N) — nenhum byte perdido no logcat.
+class ChunkedAndroidSink final : public spdlog::sinks::base_sink<std::mutex> {
+ public:
+  explicit ChunkedAndroidSink(std::string tag) : tag_(std::move(tag)) {}
+
+ protected:
+  void sink_it_(const spdlog::details::log_msg& msg) override {
+    const android_LogPriority priority = ConvertToAndroid(msg.level);
+    spdlog::memory_buf_t formatted;
+    base_sink<std::mutex>::formatter_->format(msg, formatted);
+    // Copia para garantir terminador NUL em cada bloco.
+    std::string text(formatted.data(), formatted.size());
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+      text.pop_back();
+    }
+    constexpr std::size_t kMaxChunk = 3500;
+    if (text.size() <= kMaxChunk) {
+      __android_log_write(priority, tag_.c_str(), text.c_str());
+      return;
+    }
+    const std::size_t total = (text.size() + kMaxChunk - 1) / kMaxChunk;
+    for (std::size_t i = 0; i < total; ++i) {
+      const std::size_t begin = i * kMaxChunk;
+      const std::size_t len = std::min(kMaxChunk, text.size() - begin);
+      std::string chunk = text.substr(begin, len);
+      chunk += " (";
+      chunk += std::to_string(i + 1);
+      chunk += "/";
+      chunk += std::to_string(total);
+      chunk += ")";
+      __android_log_write(priority, tag_.c_str(), chunk.c_str());
+    }
+  }
+
+  void flush_() override {}
+
+ private:
+  static android_LogPriority ConvertToAndroid(spdlog::level::level_enum level) {
+    switch (level) {
+      case spdlog::level::trace:
+        return ANDROID_LOG_VERBOSE;
+      case spdlog::level::debug:
+        return ANDROID_LOG_DEBUG;
+      case spdlog::level::info:
+        return ANDROID_LOG_INFO;
+      case spdlog::level::warn:
+        return ANDROID_LOG_WARN;
+      case spdlog::level::err:
+        return ANDROID_LOG_ERROR;
+      case spdlog::level::critical:
+        return ANDROID_LOG_FATAL;
+      default:
+        return ANDROID_LOG_DEFAULT;
+    }
+  }
+
+  std::string tag_;
+};
+#endif  // REX_PLATFORM_ANDROID
 
 std::filesystem::path NextSequentialLogPath(const std::filesystem::path& logs_dir,
                                             std::string_view app_name) {
@@ -157,7 +225,9 @@ void InitLoggingEarly() {
   // Port Android (naughtybear-restuff-android): stdout vai para /dev/null
   // em processos app_process — o canal visível é o LOGCAT. Sem este sink,
   // o boot inteiro do motor é invisível (ex.: tela preta sem diagnóstico).
-  auto sink = std::make_shared<spdlog::sinks::android_sink_mt>("restuff-rex");
+  // ChunkedAndroidSink: mensagens longas são fatiadas (~3500 B) porque o
+  // logd trunca em ~4068 B — sem isso, stack traces/dumps saem mutilados.
+  auto sink = std::make_shared<ChunkedAndroidSink>("restuff-rex");
 #else
   auto sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
 #endif
@@ -166,6 +236,18 @@ void InitLoggingEarly() {
   g_early_sink = sink;
 
   g_config.default_level = kDefaultLogLevel;
+#if REX_PLATFORM_ANDROID
+  // Port Android: a fase EARLY também respeita o nível pedido pelo launcher
+  // (REX_LOG_LEVEL, exportado pelo android_main a partir de --log-level=).
+  // Antes: hardcoded info em Release → as primeiras dezenas de mensagens do
+  // boot (cvar init, paths) ficavam invisíveis mesmo com log_level=debug no
+  // restuff.toml (que só valia para a fase tardia).
+  if (auto early_level = rex::platform::env::get("REX_LOG_LEVEL")) {
+    if (auto level = ParseLogLevel(*early_level)) {
+      g_config.default_level = *level;
+    }
+  }
+#endif
 
   // Create loggers for any categories already registered during static init
   for (auto& entry : g_registry) {
@@ -234,21 +316,81 @@ void InitLogging(const LogConfig& config) {
     resolved_path = NextSequentialLogPath(log_dir, config.app_name).string();
   }
   if (!resolved_path.empty()) {
+    // Port Android (naughtybear-restuff-android): o caminho do log agora pode
+    // apontar para o STORAGE PÚBLICO (/storage/emulated/<user>/Naughty Bear
+    // ReStuff/logs) — gravável apenas com MANAGE_EXTERNAL_STORAGE concedido.
+    // O spdlog lança spdlog_ex em falha (dir inexistente/EACCES) e NADA acima
+    // capturava → std::terminate → boot morto. Estratégia: tentar o caminho
+    // pedido; em falha, cair para o storage PRIVADO do app; em falha total,
+    // seguir com logcat apenas. O log NUNCA derruba o boot.
+#if REX_PLATFORM_ANDROID
+    bool sink_ok = false;
+    try {
+      auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+          resolved_path, static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024,
+          static_cast<size_t>(REXCVAR_GET(log_max_files)), false);
+      sink->set_level(spdlog::level::trace);
+      sink->set_pattern(config.file_pattern);
+      g_file_sink = sink;
+      sink_ok = true;
+    } catch (const std::exception& e) {
+      __android_log_print(ANDROID_LOG_ERROR, "restuff-rex",
+                          "log file '%s' inacessível: %s — caindo para o storage "
+                          "privado",
+                          resolved_path.c_str(), e.what());
+      // Fallback: <files>/logs com numeração sequencial (sempre gravável).
+      std::string fallback_dir;
+      if (auto files_dir = rex::platform::env::get("REX_ANDROID_FILES_DIR");
+          files_dir && !files_dir->empty()) {
+        fallback_dir = *files_dir + "/logs";
+      } else {
+        fallback_dir = "/data/local/tmp/restuff/logs";
+      }
+      try {
+        auto fallback_path =
+            NextSequentialLogPath(std::filesystem::path(fallback_dir),
+                                  config.app_name.empty() ? "restuff" : config.app_name);
+        auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            fallback_path, static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024,
+            static_cast<size_t>(REXCVAR_GET(log_max_files)), false);
+        sink->set_level(spdlog::level::trace);
+        sink->set_pattern(config.file_pattern);
+        g_file_sink = sink;
+        sink_ok = true;
+        __android_log_print(ANDROID_LOG_WARN, "restuff-rex",
+                            "log ativo (fallback): %s", fallback_path.string().c_str());
+      } catch (const std::exception& e2) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, "restuff-rex",
+            "log em arquivo indisponível (%s) — seguindo apenas com logcat",
+            e2.what());
+      }
+    }
+    (void)sink_ok;
+#else
     auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
         resolved_path, static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024,
         static_cast<size_t>(REXCVAR_GET(log_max_files)), false);
     sink->set_level(spdlog::level::trace);
     sink->set_pattern(config.file_pattern);
     g_file_sink = sink;
+#endif
+  }
+
+  // Port Android: com nível verbose (debug/trace) o flush passa a acontecer
+  // em debug+ (não só info+) — crash não perde o rabo do buffer do arquivo.
+  if (g_config.default_level <= spdlog::level::debug &&
+      g_config.flush_level > spdlog::level::debug) {
+    g_config.flush_level = spdlog::level::debug;
   }
 
   g_extra_sinks = config.extra_sinks;
 #if REX_PLATFORM_ANDROID
   // Port Android: espelha TODOS os logs do motor (fase tardia) no logcat,
-  // além do arquivo rotativo em files/logs — diagnóstico no device sem adb
-  // pull. O sink do stdout é inútil aqui (app_process → /dev/null).
-  g_extra_sinks.push_back(
-      std::make_shared<spdlog::sinks::android_sink_mt>("restuff-rex"));
+  // além do arquivo rotativo — diagnóstico no device sem adb pull. O sink do
+  // stdout é inútil aqui (app_process → /dev/null). ChunkedAndroidSink: fatia
+  // mensagens > ~3500 B (logd trunca em ~4068 B) — stack traces inteiros.
+  g_extra_sinks.push_back(std::make_shared<ChunkedAndroidSink>("restuff-rex"));
 #endif
 
   // Rebuild all loggers with new sinks

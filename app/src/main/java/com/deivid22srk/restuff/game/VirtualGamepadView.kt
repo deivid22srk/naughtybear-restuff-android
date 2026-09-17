@@ -12,6 +12,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.min
 
@@ -23,26 +24,37 @@ import kotlin.math.min
  * suaves. Nada de gamepad "desenhado": só o essencial para jogar sem pad.
  *
  * Layout (frações da tela, landscape):
- *   - direita-baixo : cluster ABXY
- *   - esquerda-baixo: analógico (thumbstick com mola)
- *   - topo          : LB/RB (pílulas) e LT/RT (gatilhos nas bordas)
- *   - centro        : Back/Start (círculos pequenos)
- *   - centro-baixo  : D-pad compacto (8 direções via ângulo)
+ *   - esquerda-baixo : analógico esquerdo (L — movimento)
+ *   - direita-centro : analógico direito  (R — câmera)
+ *   - direita-baixo  : cluster ABXY
+ *   - topo           : LB/RB (pílulas) e LT/RT (gatilhos nas bordas)
+ *   - centro         : Back/Start (círculos pequenos)
+ *   - centro-baixo   : D-pad compacto, 8 direções via octantes do ângulo
  *
  * Multi-touch real: cada ponteiro é atribuído ao controle sob ele no
- * ACTION_DOWN/POINTER_DOWN e liberado no UP/POINTER_UP/POINTER_CANCEL.
- * O estado consolidado é enviado ao SDL virtual joystick (P1) via JNI
- * apenas quando muda (zero custo em frames parados).
+ * ACTION_DOWN/POINTER_DOWN e liberado no UP/POINTER_UP/POINTER_CANCEL. O
+ * D-pad re-avalia a direção durante o arrasto (octante pelo ângulo), e dois
+ * dedos no mesmo botão mantêm o botão pressionado (bits recomputados da
+ * união das atribuições vivas).
+ *
+ * DECISÃO de input: a view consome TODOS os toques quando visível (retorna
+ * true em onTouchEvent). O jogo é dirigido por gamepad — o contrário
+ * (pass-through) entregaria o gesto multi-touch inteiro ao SDL ao declinar
+ * um ACTION_DOWN, quebrando pressões simultâneas de botões. Toques no "vazio"
+ * não fazem nada; o painel de ajustes abre com 4 dedos (nível Activity).
+ *
+ * O estado consolidado é enviado ao SDL virtual joystick (P1) via JNI apenas
+ * quando muda (detecção explícita — zero custo em frames parados).
  *
  * @param opacity opacidade base dos controles (0.2–1.0)
  * @param scale   escala de tamanho dos controles (0.75–1.5)
- * @param haptics vibração curta ao pressionar botões
+ * @param haptics vibração curta ao pressionar controles
  */
 class VirtualGamepadView(
     context: Context,
     private var opacity: Float,
     private var scale: Float,
-    private val haptics: Boolean,
+    private var haptics: Boolean,
 ) : View(context) {
 
     // ------------------------------------------------------------------
@@ -57,7 +69,25 @@ class VirtualGamepadView(
         val cx: Float, // fração da largura (0..1)
         val cy: Float, // fração da altura (0..1)
         val radius: Float, // fração da menor dimensão
-        val bit: Int, // bit no bitmask (BUTTON/TRIGGER: rt usa bit 15)
+        val bit: Int, // bit no bitmask (BUTTON/TRIGGER)
+    )
+
+    /** Toque ativo em um analógico (polegar preso ao anel, com mola). */
+    private class StickTouch(
+        val pointerId: Int,
+        var centerX: Float,
+        var centerY: Float,
+        var radiusPx: Float,
+    ) {
+        var thumbX = 0f // px, offset do centro
+        var thumbY = 0f
+    }
+
+    /** Botão/D-pad atribuído a um ponteiro (máscara viva p/ diagonais). */
+    private class Assignment(
+        val pad: Pad,
+        var mask: Int, // bits de botão atualmente pressionados por ESTE ponteiro
+        val trigger: Int, // 0 (não-gatilho), BIT_LT ou BIT_RT
     )
 
     private companion object {
@@ -83,7 +113,10 @@ class VirtualGamepadView(
         val s = scale.coerceIn(0.7f, 1.6f)
         val small = min(width, height).toFloat()
         val r = { f: Float -> f * small * s }
-        // Coordenadas normalizadas pensadas para landscape (wide).
+        // Coordenadas normalizadas pensadas para landscape (wide). O stick
+        // direito (câmera) fica entre o D-pad e o cluster ABXY: 4 agrupamentos
+        // equilibrados (0.135 / 0.385 / 0.615 / 0.885) — o polegar direito
+        // alterna entre R e ABXY como num pad físico.
         return listOf(
             Pad("A", Kind.BUTTON, 0.885f, 0.80f, r(0.075f), BIT_A),
             Pad("B", Kind.BUTTON, 0.940f, 0.68f, r(0.075f), BIT_B),
@@ -96,6 +129,7 @@ class VirtualGamepadView(
             Pad("BACK", Kind.BUTTON, 0.425f, 0.86f, r(0.048f), BIT_BACK),
             Pad("START", Kind.BUTTON, 0.575f, 0.86f, r(0.048f), BIT_START),
             Pad("STICK", Kind.STICK, 0.135f, 0.66f, r(0.145f), BIT_LS),
+            Pad("RSTICK", Kind.STICK, 0.615f, 0.60f, r(0.145f), BIT_RS),
             Pad("DPAD", Kind.DPAD, 0.385f, 0.62f, r(0.105f), BIT_DUP),
         )
     }
@@ -116,14 +150,16 @@ class VirtualGamepadView(
     private var rx = 0
     private var ry = 0
 
-    private var stickPointer = -1
-    private var stickThumbX = 0f // px, offset do centro
-    private var stickThumbY = 0f
-    private var stickCenterX = 0f
-    private var stickCenterY = 0f
-    private var stickRadiusPx = 1f
+    private var stickL: StickTouch? = null
+    private var stickR: StickTouch? = null
 
-    private val pointerButton = SparseIntArrayCompat() // pointerId -> bit/controle
+    private val assignments = HashMap<Int, Assignment>() // pointerId → controle
+
+    // Último estado enviado ao SDL (fire só transmite quando muda).
+    private var lastMask = -1
+    private var lastLx = 0; private var lastLy = 0
+    private var lastRx = 0; private var lastRy = 0
+    private var lastLt = 0; private var lastRt = 0
 
     // ------------------------------------------------------------------
     // Pintura
@@ -164,13 +200,13 @@ class VirtualGamepadView(
         super.onDraw(canvas)
         val base = opacity.coerceIn(MIN_OPACITY, MAX_OPACITY)
         for (c in controlsCache) {
-            val cx = c.cx * viewW
-            val cy = c.cy * viewH
-            val r = c.radius
             when (c.kind) {
-                Kind.STICK -> drawStick(canvas, cx, cy, r, base)
-                Kind.DPAD -> drawDpad(canvas, cx, cy, r, base)
-                else -> drawRoundButton(canvas, cx, cy, r, c, base)
+                Kind.STICK -> {
+                    val st = if (c.id == "STICK") stickL else stickR
+                    drawStick(canvas, c, st, base)
+                }
+                Kind.DPAD -> drawDpad(canvas, c.cx * viewW, c.cy * viewH, c.radius, base)
+                else -> drawRoundButton(canvas, c.cx * viewW, c.cy * viewH, c.radius, c, base)
             }
         }
     }
@@ -191,6 +227,12 @@ class VirtualGamepadView(
             canvas.drawRoundRect(RectF(cx - r, top, cx + r, cy + r), r, r, fillPaint)
             strokePaint.alpha = (a * 255).toInt()
             canvas.drawRoundRect(RectF(cx - r, cy - r, cx + r, cy + r), r, r, strokePaint)
+            // Rótulo do gatilho (bug reportado: LT/RT não desenhavam texto).
+            textPaint.color = Color.WHITE
+            textPaint.alpha = (base * 235).toInt()
+            val ts = r * 0.62f
+            textPaint.textSize = ts
+            canvas.drawText(c.id, cx, cy + ts * 0.35f, textPaint)
             return
         }
 
@@ -214,19 +256,29 @@ class VirtualGamepadView(
         canvas.drawText(label, cx, cy + ts * 0.35f, textPaint)
     }
 
-    private fun drawStick(canvas: Canvas, cx: Float, cy: Float, r: Float, base: Float) {
+    private fun drawStick(canvas: Canvas, pad: Pad, st: StickTouch?, base: Float) {
+        val cx = pad.cx * viewW
+        val cy = pad.cy * viewH
+        val r = pad.radius
         // Zona externa: anel discreto.
         strokePaint.color = Color.WHITE
         strokePaint.alpha = (base * 150).toInt()
         canvas.drawCircle(cx, cy, r, strokePaint)
         strokePaint.alpha = (base * 60).toInt()
         canvas.drawCircle(cx, cy, r * 0.62f, strokePaint)
-        // Polegar.
+        // Marca discreta L/R no centro do anel: identifica qual analógico é.
+        textPaint.color = Color.WHITE
+        textPaint.alpha = (base * 110).toInt()
+        textPaint.textSize = r * 0.34f
+        canvas.drawText(if (pad.id == "STICK") "L" else "R", cx, cy + r * 0.12f, textPaint)
+        // Polegar (mola: fica no centro quando sem toque).
         fillPaint.color = Color.WHITE
         fillPaint.alpha = (base * 90).toInt()
-        canvas.drawCircle(stickCenterX + stickThumbX, stickCenterY + stickThumbY, r * 0.42f, fillPaint)
+        val tx = cx + (st?.thumbX ?: 0f)
+        val ty = cy + (st?.thumbY ?: 0f)
+        canvas.drawCircle(tx, ty, r * 0.42f, fillPaint)
         strokePaint.alpha = (base * 200).toInt()
-        canvas.drawCircle(stickCenterX + stickThumbX, stickCenterY + stickThumbY, r * 0.42f, strokePaint)
+        canvas.drawCircle(tx, ty, r * 0.42f, strokePaint)
     }
 
     private fun drawDpad(canvas: Canvas, cx: Float, cy: Float, r: Float, base: Float) {
@@ -276,17 +328,18 @@ class VirtualGamepadView(
     }
 
     private fun assignPointer(pointerId: Int, x: Float, y: Float) {
-        // Stick tem prioridade (zona maior).
+        // Analógicos têm prioridade (zonas maiores).
         for (c in controlsCache) {
-            if (c.kind == Kind.STICK) {
-                val cx = c.cx * viewW; val cy = c.cy * viewH
-                if (hypot(x - cx, y - cy) <= c.radius * 1.25f) {
-                    stickPointer = pointerId
-                    stickCenterX = cx; stickCenterY = cy
-                    stickRadiusPx = c.radius * 0.62f
-                    movePointer(pointerId, x, y)
-                    return
-                }
+            if (c.kind != Kind.STICK) continue
+            val occupied = if (c.id == "STICK") stickL != null else stickR != null
+            if (occupied) continue
+            val cx = c.cx * viewW; val cy = c.cy * viewH
+            if (hypot(x - cx, y - cy) <= c.radius * 1.25f) {
+                val st = StickTouch(pointerId, cx, cy, c.radius * 0.62f)
+                if (c.id == "STICK") stickL = st else stickR = st
+                hapticTap()
+                movePointer(pointerId, x, y)
+                return
             }
         }
         // Botão mais próximo dentro do raio.
@@ -299,101 +352,159 @@ class VirtualGamepadView(
             if (d <= hit && d < bestD) { best = c; bestD = d }
         }
         if (best != null) {
-            val bit = if (best.kind == Kind.DPAD) {
-                dpadBitAt(best, x, y)
+            val mask = if (best.kind == Kind.DPAD) {
+                dpadMaskAt(best, x, y)
             } else {
-                best.bit
+                1 shl best.bit
             }
-            pointerButton.put(pointerId, bit)
-            if (best.kind == Kind.TRIGGER) {
-                if (bit == BIT_LT) lt = 32767 else rt = 32767
-            } else {
-                setButtonBit(bit, true)
-            }
+            val trigger = if (best.kind == Kind.TRIGGER) best.bit else 0
+            assignments[pointerId] = Assignment(best, mask, trigger)
+            if (trigger == BIT_LT) lt = 32767
+            if (trigger == BIT_RT) rt = 32767
+            syncButtonBitsFromAssignments()
             hapticTap()
             fire()
             invalidate()
         }
     }
 
-    /** Direção do D-pad pelo ângulo do toque em torno do centro. */
-    private fun dpadBitAt(pad: Pad, x: Float, y: Float): Int {
+    /**
+     * D-pad 8 direções: octante do ângulo do toque em torno do centro
+     * (0° = leste, -90° = norte; setores de 45°). Diagonais acionam dois
+     * bits — o joystick virtual interpreta a combinação como diagonal.
+     */
+    private fun dpadMaskAt(pad: Pad, x: Float, y: Float): Int {
         val cx = pad.cx * viewW
         val cy = pad.cy * viewH
-        val dx = x - cx
-        val dy = y - cy
-        return if (abs(dx) >= abs(dy)) {
-            if (dx > 0) BIT_DRIGHT else BIT_DLEFT
-        } else {
-            if (dy > 0) BIT_DDOWN else BIT_DUP
+        val angle = Math.toDegrees(atan2(y - cy, x - cx).toDouble())
+        return when {
+            angle >= 157.5 || angle < -157.5 -> BIT_DLEFT
+            angle >= 112.5 -> BIT_DLEFT or BIT_DDOWN
+            angle >= 67.5 -> BIT_DDOWN
+            angle >= 22.5 -> BIT_DDOWN or BIT_DRIGHT
+            angle >= -22.5 -> BIT_DRIGHT
+            angle >= -67.5 -> BIT_DRIGHT or BIT_DUP
+            angle >= -112.5 -> BIT_DUP
+            else -> BIT_DUP or BIT_DLEFT
         }
     }
 
     private fun movePointer(pointerId: Int, x: Float, y: Float) {
-        if (pointerId == stickPointer) {
-            var dx = x - stickCenterX
-            var dy = y - stickCenterY
+        val st = stickL?.takeIf { it.pointerId == pointerId }
+            ?: stickR?.takeIf { it.pointerId == pointerId }
+        if (st != null) {
+            var dx = x - st.centerX
+            var dy = y - st.centerY
             val len = hypot(dx, dy)
-            if (len > stickRadiusPx) {
-                dx = dx / len * stickRadiusPx
-                dy = dy / len * stickRadiusPx
+            if (len > st.radiusPx) {
+                dx = dx / len * st.radiusPx
+                dy = dy / len * st.radiusPx
             }
-            stickThumbX = dx; stickThumbY = dy
-            lx = (dx / stickRadiusPx * 32767f).toInt().coerceIn(-32768, 32767)
-            ly = (dy / stickRadiusPx * 32767f).toInt().coerceIn(-32768, 32767)
-            // Pressionar o stick (L3) só com "clique" não é detectável em touch —
-            // LS fica ativo enquanto o polegar está deslocado (padrão em ports).
-            setButtonBit(BIT_LS, abs(lx) > 8000 || abs(ly) > 8000)
+            st.thumbX = dx; st.thumbY = dy
+            if (stickL === st) {
+                lx = (dx / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+                ly = (dy / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+                // Pressionar o stick (L3) só com "clique" não é detectável em touch —
+                // LS fica ativo enquanto o polegar está deslocado (padrão em ports).
+                setButtonBit(BIT_LS, abs(lx) > 8000 || abs(ly) > 8000)
+            } else {
+                rx = (dx / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+                ry = (dy / st.radiusPx * 32767f).toInt().coerceIn(-32768, 32767)
+                // RS (R3) NÃO é auto-ativado: em console o clique do analógico
+                // direito costuma ser "reset de câmera" — dispará-lo a cada pan
+                // lutaria contra o jogador. Sem análogo touch para clique real.
+            }
+            fire()
+            invalidate()
+            return
+        }
+        // D-pad vivo: direção re-avaliada durante o arrasto.
+        val asg = assignments[pointerId] ?: return
+        if (asg.pad.kind != Kind.DPAD) return
+        val newMask = dpadMaskAt(asg.pad, x, y)
+        if (newMask != asg.mask) {
+            asg.mask = newMask
+            syncButtonBitsFromAssignments()
             fire()
             invalidate()
         }
     }
 
     private fun releasePointer(pointerId: Int) {
-        if (pointerId == stickPointer) {
-            stickPointer = -1
-            stickThumbX = 0f; stickThumbY = 0f
-            lx = 0; ly = 0
-            setButtonBit(BIT_LS, false)
-            fire()
-            invalidate()
-            return
-        }
-        val bit = pointerButton.get(pointerId, -1)
-        if (bit >= 0) {
-            pointerButton.delete(pointerId)
-            when (bit) {
-                BIT_LT -> lt = 0
-                BIT_RT -> rt = 0
-                else -> setButtonBit(bit, false)
+        stickL?.let {
+            if (it.pointerId == pointerId) {
+                stickL = null
+                lx = 0; ly = 0
+                setButtonBit(BIT_LS, false)
+                fire()
+                invalidate()
+                return
             }
-            fire()
-            invalidate()
         }
+        stickR?.let {
+            if (it.pointerId == pointerId) {
+                stickR = null
+                rx = 0; ry = 0
+                fire()
+                invalidate()
+                return
+            }
+        }
+        val asg = assignments.remove(pointerId) ?: return
+        // Gatilho só libera se NENHUM outro dedo o segura.
+        if (asg.trigger == BIT_LT && assignments.values.none { it.trigger == BIT_LT }) lt = 0
+        if (asg.trigger == BIT_RT && assignments.values.none { it.trigger == BIT_RT }) rt = 0
+        syncButtonBitsFromAssignments()
+        fire()
+        invalidate()
     }
 
     private fun releaseAll() {
-        stickPointer = -1
-        stickThumbX = 0f; stickThumbY = 0f
+        stickL = null
+        stickR = null
+        assignments.clear()
         lx = 0; ly = 0; rx = 0; ry = 0; lt = 0; rt = 0
         for (i in buttons.indices) buttons[i] = 0
-        pointerButton.clear()
-        fire()
+        fire(force = true)
         invalidate()
+    }
+
+    /**
+     * Bits de botão = união das máscaras vivas (dois dedos no mesmo botão
+     * mantêm o botão pressionado; soltar um não derruba o outro). Bits de
+     * stick-click (LS/RS) ficam de fora — são da lógica dos analógicos.
+     */
+    private fun syncButtonBitsFromAssignments() {
+        var union = 0
+        for (a in assignments.values) union = union or a.mask
+        for (b in 0 until 15) {
+            if (b == BIT_LS || b == BIT_RS) continue
+            setButtonBit(b, union and (1 shl b) != 0)
+        }
     }
 
     private fun setButtonBit(bit: Int, pressed: Boolean) {
         buttons[bit] = if (pressed) 1 else 0
     }
 
-    /** Estado consolidado → SDL (P1 virtual) via JNI. */
-    private fun fire() {
+    /**
+     * Estado consolidado → SDL (P1 virtual) via JNI. Só transmite quando o
+     * estado muda de fato (detecção explícita) — MOVE sem variação não paga
+     * JNI+mutex. [force] garante o envio do estado zero (releaseAll).
+     */
+    private fun fire(force: Boolean = false) {
         if (!NativeBridge.loaded) return
         var mask = 0
         for (i in 0 until 15) {
             if (buttons[i] != 0) mask = mask or (1 shl i)
         }
-        // Direções do D-pad derivadas do stick? Não: D-pad é botão dedicado.
+        if (!force && mask == lastMask && lx == lastLx && ly == lastLy &&
+            rx == lastRx && ry == lastRy && lt == lastLt && rt == lastRt
+        ) return
+        lastMask = mask
+        lastLx = lx; lastLy = ly
+        lastRx = rx; lastRy = ry
+        lastLt = lt; lastRt = rt
         NativeBridge.nativeSetVirtualPadState(mask, lx, ly, rx, ry, lt, rt)
     }
 
@@ -412,7 +523,7 @@ class VirtualGamepadView(
     }
 
     // ------------------------------------------------------------------
-    // Config dinâmica
+    // Config dinâmica (aplicada ao vivo pelo diálogo de ajustes rápidos)
     // ------------------------------------------------------------------
 
     fun setOpacity(v: Float) {
@@ -423,19 +534,25 @@ class VirtualGamepadView(
     fun setScale(v: Float) {
         scale = v.coerceIn(0.7f, 1.6f)
         controlsCache = controls(viewW.toInt(), viewH.toInt())
+        // Re-ancora toques ativos nos novos centros/raios (o diálogo pode
+        // mudar a escala com um stick preso por outro dedo).
+        for (pad in controlsCache) {
+            if (pad.kind != Kind.STICK) continue
+            val st = (if (pad.id == "STICK") stickL else stickR) ?: continue
+            st.centerX = pad.cx * viewW
+            st.centerY = pad.cy * viewH
+            st.radiusPx = pad.radius * 0.62f
+            // Re-clampa o polegar e re-deriva os eixos a partir da posição atual.
+            movePointer(st.pointerId, st.centerX + st.thumbX, st.centerY + st.thumbY)
+        }
         invalidate()
+    }
+
+    fun setHaptics(v: Boolean) {
+        haptics = v
     }
 
     fun shutdown() {
         releaseAll()
-    }
-
-    /** Compat mínima (evita androidx.collection em um arquivo só do overlay). */
-    private class SparseIntArrayCompat {
-        private val map = HashMap<Int, Int>()
-        fun put(k: Int, v: Int) { map[k] = v }
-        fun get(k: Int, fallback: Int): Int = map[k] ?: fallback
-        fun delete(k: Int) { map.remove(k) }
-        fun clear() = map.clear()
     }
 }

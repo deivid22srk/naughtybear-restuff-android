@@ -100,6 +100,88 @@ if [[ ! -x "$GLSLC_HOST" ]]; then
     chmod +x "$GLSLC_HOST"
 fi
 
+# --- [1d] AdrenoTools (libadrenotools + hooks p/ driver Turnip custom) ------
+# Motor do carregamento REAL do driver customizado: adrenotools_open_libvulkan
+# devolve o handle do loader do sistema com hooks que redirecionam a abertura
+# do driver para o .so importado (namespace ligado ao sphal, onde
+# libcutils/libhardware resolvem). Requer:
+#   - submódulo native/thirdparty/libadrenotools (com lib/linkernsbypass)
+#   - useLegacyPackaging=true no APK (hooks como ARQUIVOS em nativeLibraryDir)
+# API mínima 28 (linkernsbypass); em API < 28 o adrenotools devolve nullptr e
+# o port cai no driver do sistema (fallback logado).
+ADRENOTOOLS_SRC="${ADRENOTOOLS_SRC:-$ROOT/native/thirdparty/libadrenotools}"
+if [[ ! -d "$ADRENOTOOLS_SRC/lib/linkernsbypass" ]]; then
+    echo "ERRO: $ADRENOTOOLS_SRC sem lib/linkernsbypass (submódulos inicializados?)" >&2
+    exit 1
+fi
+ADRENOTOOLS_BUILD="$ROOT/build/adrenotools-$ABI"
+if [[ ! -f "$ADRENOTOOLS_BUILD/libadrenotools.so" ]]; then
+    echo "== adrenotools: build Android ($ABI) =="
+    # BUILD_SHARED_LIBS=ON: add_library(adrenotools) do upstream não declara
+    # tipo → sem isso vira .a (e o --exclude-libs do upstream exige shared).
+    # CMAKE_LIBRARY_OUTPUT_DIRECTORY: os 4 hooks vivem em src/hook/ sem isso —
+    # unifica tudo na raiz do build p/ o loop de cópia abaixo.
+    cmake -S "$ADRENOTOOLS_SRC" -B "$ADRENOTOOLS_BUILD" \
+        -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM="android-28" \
+        -DANDROID_STL=c++_shared \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$ADRENOTOOLS_BUILD" \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$ADRENOTOOLS_BUILD" --parallel "$(nproc)"
+fi
+# libadrenotools + hooks (precisam existir COMO ARQUIVOS — useLegacyPackaging)
+for adrlib in libadrenotools.so libmain_hook.so libhook_impl.so \
+              libfile_redirect_hook.so libgsl_alloc_hook.so; do
+    if [[ ! -f "$ADRENOTOOLS_BUILD/$adrlib" ]]; then
+        echo "ERRO FATAL: $adrlib não construído (build adrenotools)" >&2
+        exit 1
+    fi
+    cp "$ADRENOTOOLS_BUILD/$adrlib" "$JNILIBS_DIR/"
+done
+echo "  adrenotools: 5 libs copiadas para jniLibs"
+
+# --- [1e] Vortek (cliente libvulkan_vortek.so + servidor libvortekrenderer.so)
+# Camada de compatibilidade Vulkan do Vortek (brunodev85/Winlator, LGPL-2.1):
+# o cliente é um ICD que o motor dlopena (exporta vkGetInstanceProcAddr
+# padrão); o servidor executa as chamadas no driver Vulkan do HOST com fixups
+# (emulação de formato, BC decode, timeline semaphores, pipelines async).
+# Cliente e servidor vivem no MESMO processo do jogo — ver
+# native/thirdparty/vortek{,renderer}/README-PROVENANCE.md.
+VORTEK_BUILD="$ROOT/build/vortek-$ABI"
+if [[ ! -f "$VORTEK_BUILD/client/libvulkan_vortek.so" || ! -f "$VORTEK_BUILD/server/libvortekrenderer.so" ]]; then
+    echo "== vortek: build Android ($ABI) =="
+    cmake -S "$ROOT/native/thirdparty/vortek" -B "$VORTEK_BUILD/client" \
+        -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM="android-28" \
+        -DANDROID_STL=none \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$VORTEK_BUILD/client" --parallel "$(nproc)"
+    cmake -S "$ROOT/native/thirdparty/vortekrenderer" -B "$VORTEK_BUILD/server" \
+        -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+        -DANDROID_ABI="$ABI" \
+        -DANDROID_PLATFORM="android-28" \
+        -DANDROID_STL=none \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DADRENOTOOLS_INCLUDE_DIR="$ADRENOTOOLS_SRC/include" \
+        -DADRENOTOOLS_LIBRARY="$ADRENOTOOLS_BUILD/libadrenotools.so"
+    cmake --build "$VORTEK_BUILD/server" --parallel "$(nproc)"
+fi
+for vtlib in libvulkan_vortek.so libvortekrenderer.so; do
+    VTLIB_PATH=$(find "$VORTEK_BUILD" -name "$vtlib" -type f 2>/dev/null | head -1)
+    if [[ -z "$VTLIB_PATH" ]]; then
+        echo "ERRO FATAL: $vtlib não construído (build vortek)" >&2
+        exit 1
+    fi
+    cp "$VTLIB_PATH" "$JNILIBS_DIR/"
+done
+echo "  vortek: 2 libs copiadas para jniLibs"
+
 # --- [2] librestuff.so -----------------------------------------------------
 echo "== librestuff.so ($ABI) =="
 cmake -S "$ROOT/native" -B "$BUILD_OUT" \
@@ -114,6 +196,35 @@ cmake -S "$ROOT/native" -B "$BUILD_OUT" \
     -DSHADERC_ANDROID_ROOT="$SHADERC_INSTALL" \
     -DGLSLC_EXECUTABLE="$GLSLC_HOST"
 cmake --build "$BUILD_OUT" --parallel "$(nproc)"
+
+# ARM PERF/diagnóstico: o alvo restuff compila com -gline-tables-only
+# (crash backtraces resolvíveis offline). As tabelas (~+85MB neste código
+# recompilado) NÃO podem ir para o APK de todo usuário — e o AGP deste
+# runner não consegue stripar nada (log: "Unable to strip ... packaging
+# them as are"). Então: preserva o build COM debug num artefato separado
+# (librestuff.so.unstripped — o CI o upa como "debug-symbols") e entrega ao
+# APK a versão stripada. llvm-strip --strip-debug remove SÓ .debug_*;
+# .dynsym (símbolos JNI), .eh_frame (unwind do crash handler) e todo o
+# código/rodata ficam intactos — sem efeito em runtime.
+# NOTA: no NDK r27 os binários de toolchain são SYMLINKS — o find NÃO pode
+# filtrar por -type f (primeira iteração perdeu o llvm-strip por isso);
+# fallbacks: llvm-strip/llvm-strip-19 do PATH (o CI instala LLVM 19 via
+# llvm.sh; strip de ELF é independente do target arch).
+LLVM_STRIP=$(find "$NDK_DIR/toolchains/llvm/prebuilt" -name llvm-strip 2>/dev/null | head -1)
+if [[ -z "$LLVM_STRIP" ]]; then
+    for cand in llvm-strip llvm-strip-19; do
+        if command -v "$cand" >/dev/null 2>&1; then LLVM_STRIP="$cand"; break; fi
+    done
+fi
+if [[ -n "$LLVM_STRIP" ]]; then
+    cp "$BUILD_OUT/librestuff.so" "$BUILD_OUT/librestuff.so.unstripped"
+    "$LLVM_STRIP" --strip-debug "$BUILD_OUT/librestuff.so"
+    echo "  librestuff stripada ($("$LLVM_STRIP" --version | head -1)):"
+    stat -c '    APK recebe: %s bytes' "$BUILD_OUT/librestuff.so"
+    stat -c '    símbolos (unstripped): %s bytes' "$BUILD_OUT/librestuff.so.unstripped"
+else
+    echo "AVISO: llvm-strip não encontrado (NDK nem PATH) — APK incluirá as line tables (+~85MB)" >&2
+fi
 
 # --- [3] Empacotar jniLibs -------------------------------------------------
 cp "$BUILD_OUT/librestuff.so" "$JNILIBS_DIR/"

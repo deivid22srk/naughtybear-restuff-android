@@ -17,12 +17,15 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gamepad.h>
@@ -40,9 +43,178 @@
 #include <rex/ui/windowed_app.h>
 #include <rex/ui/windowed_app_context_sdl.h>
 
+// Port Android (naughtybear-restuff-android): crash handler nativo — ver
+// InstallCrashHandler/RestuffCrashHandler abaixo.
+#include <cerrno>
+#include <cstdint>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <unwind.h>
+
 #define ALOG(...) __android_log_print(ANDROID_LOG_INFO, "restuff", __VA_ARGS__)
 
 namespace restuff_android {
+
+// ----------------------------------------------------------------------
+// Crash handler nativo (stack trace persistido)
+// ----------------------------------------------------------------------
+// [motivação] Antes: crash de código nativo (SIGSEGV/SIGABRT/...) só gerava
+// "Fatal signal" no logcat e um tombstone em /data/tombstones — inacessível
+// sem root/adb. O usuário não conseguia anexar o stack trace a um relatório.
+// Agora: backtrace via _Unwind_Backtrace é gravado (best-effort,
+// async-signal-safe o máximo possível) no ARQUIVO DE LOG ativo (mesmo arquivo
+// do spdlog — caminho passado via --log-file=) e em <files>/last_crash.txt
+// (sempre gravável, lido pela tela de Diagnóstico), além do logcat (FATAL).
+// Depois o handler restaura o default e re-raise — o debuggerd ainda gera o
+// tombstone oficial.
+
+constexpr size_t kMaxCrashFrames = 32;
+
+struct CrashGlobals {
+  char log_path[512];      // arquivo de log da sessão ("" = nenhum)
+  char private_path[512];  // <files>/last_crash.txt ("" = nenhum)
+};
+
+CrashGlobals g_crash = {};
+
+struct UnwindState {
+  void* frames[kMaxCrashFrames];
+  size_t count;
+  size_t skip;
+};
+
+_Unwind_Reason_Code CrashUnwindCallback(struct _Unwind_Context* context, void* arg) {
+  auto* state = static_cast<UnwindState*>(arg);
+  if (state->skip > 0) {
+    --state->skip;
+    return _URC_NO_REASON;
+  }
+  const uintptr_t pc = _Unwind_GetIP(context);
+  if (pc != 0 && state->count < kMaxCrashFrames) {
+    state->frames[state->count++] = reinterpret_cast<void*>(pc);
+  }
+  return _URC_NO_REASON;
+}
+
+// write() é async-signal-safe; tudo mais aqui é best-effort.
+void CrashWriteAll(int fd, const char* text) {
+  if (fd < 0) return;
+  size_t len = strlen(text);
+  while (len > 0) {
+    const ssize_t n = write(fd, text, len);
+    if (n <= 0) return;
+    text += n;
+    len -= static_cast<size_t>(n);
+  }
+}
+
+extern "C" void RestuffCrashHandler(int sig, siginfo_t* info, void*) {
+  const char* signame = "?";
+  switch (sig) {
+    case SIGSEGV: signame = "SIGSEGV"; break;
+    case SIGBUS: signame = "SIGBUS"; break;
+    case SIGABRT: signame = "SIGABRT"; break;
+    case SIGFPE: signame = "SIGFPE"; break;
+    case SIGILL: signame = "SIGILL"; break;
+    default: break;
+  }
+
+  __android_log_print(ANDROID_LOG_FATAL, "restuff-rex",
+                      "=== CRASH NATIVO (%s, si_code=%d, addr=%p) — coletando "
+                      "backtrace ===",
+                      signame, info ? info->si_code : 0,
+                      info ? info->si_addr : nullptr);
+
+  // Backtrace (best-effort; pula os 2 frames internos do handler).
+  UnwindState state = {};
+  // skip=1: _Unwind_Backtrace começa no chamador (RestuffCrashHandler);
+  // o frame do signal trampoline (__restore_rt) pode ou não ser contado pelo
+  // unwinder — prefere-se MOSTRAR um frame inútil a PERDER o frame que
+  // faultou (o tombstone oficial do debuggerd cobre qualquer dúvida).
+  state.skip = 1;
+  _Unwind_Backtrace(CrashUnwindCallback, &state);
+
+  // Logcat: cada frame com módulo/offset via dladdr (best-effort).
+  for (size_t i = 0; i < state.count; ++i) {
+    Dl_info dlinfo = {};
+    const bool has_info = dladdr(state.frames[i], &dlinfo) != 0;
+    if (has_info && dlinfo.dli_sname != nullptr) {
+      __android_log_print(ANDROID_LOG_FATAL, "restuff-rex", "  #%02zu  %p  %s + %td",
+                          i, state.frames[i], dlinfo.dli_sname,
+                          reinterpret_cast<char*>(state.frames[i]) -
+                              reinterpret_cast<char*>(dlinfo.dli_saddr));
+    } else {
+      __android_log_print(ANDROID_LOG_FATAL, "restuff-rex", "  #%02zu  %p  (%s%s)", i,
+                          state.frames[i],
+                          has_info && dlinfo.dli_fname ? dlinfo.dli_fname : "?",
+                          has_info && dlinfo.dli_sname ? "" : " sem símbolo");
+    }
+  }
+
+  // Arquivo de log da sessão (se houver) + last_crash.txt (sempre).
+  for (const char* target : {g_crash.log_path, g_crash.private_path}) {
+    if (target[0] == '\0') continue;
+    const int fd = open(target, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) continue;
+    char header[256];
+    snprintf(header, sizeof(header),
+             "\n=== CRASH NATIVO: %s (si_code=%d, addr=%p) — backtrace ===\n",
+             signame, info ? info->si_code : 0, info ? info->si_addr : nullptr);
+    CrashWriteAll(fd, header);
+    for (size_t i = 0; i < state.count; ++i) {
+      Dl_info dlinfo = {};
+      char line[512];
+      if (dladdr(state.frames[i], &dlinfo) != 0 && dlinfo.dli_sname != nullptr) {
+        snprintf(line, sizeof(line), "  #%02zu  %p  %s + %td\n", i, state.frames[i],
+                 dlinfo.dli_sname,
+                 reinterpret_cast<char*>(state.frames[i]) -
+                     reinterpret_cast<char*>(dlinfo.dli_saddr));
+      } else {
+        snprintf(line, sizeof(line), "  #%02zu  %p  (%s)\n", i, state.frames[i],
+                 dladdr(state.frames[i], &dlinfo) != 0 && dlinfo.dli_fname
+                     ? dlinfo.dli_fname
+                     : "?");
+      }
+      CrashWriteAll(fd, line);
+    }
+    CrashWriteAll(fd, "=== fim do backtrace (tombstone oficial no logcat) ===\n");
+    close(fd);
+  }
+
+  // Re-raise com handler default: o debuggerd gera o tombstone oficial.
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+void InstallCrashHandler(const char* log_file_path, const char* files_dir) {
+  if (log_file_path != nullptr) {
+    snprintf(g_crash.log_path, sizeof(g_crash.log_path), "%s", log_file_path);
+  }
+  if (files_dir != nullptr && files_dir[0] != '\0') {
+    snprintf(g_crash.private_path, sizeof(g_crash.private_path), "%s/last_crash.txt",
+             files_dir);
+  }
+  static char alt_stack[64 * 1024];  // stack separado p/ o handler (SA_ONSTACK)
+  stack_t ss = {};
+  ss.ss_sp = alt_stack;
+  ss.ss_size = sizeof(alt_stack);
+  ss.ss_flags = 0;
+  if (sigaltstack(&ss, nullptr) != 0) {
+    ALOG("crash handler: sigaltstack falhou (%s)", strerror(errno));
+  }
+  struct sigaction sa = {};
+  sa.sa_sigaction = RestuffCrashHandler;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  const int signals[] = {SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL};
+  for (const int s : signals) {
+    sigaction(s, &sa, nullptr);
+  }
+  ALOG("crash handler instalado (log: %s)", g_crash.log_path[0] ? g_crash.log_path : "<privado>");
+}
 
 // ----------------------------------------------------------------------
 // Virtual gamepad P1 (SDL virtual joystick, tipo GAMEPAD)
@@ -151,6 +323,67 @@ Java_com_deivid22srk_restuff_game_NativeBridge_nativeSetVirtualPadState(
   restuff_android::ApplyVirtualPad(buttons, lx, ly, rx, ry, lt, rt);
 }
 
+// Contador de FPS (design "Mel & Carvão"): total acumulado de quadros
+// apresentados pelo backend Vulkan. O contador vive no vulkan_device.cpp
+// (overlay do rexglue-sdk) como g_rexrestuff_vk_present_count com linkage
+// C — um atomic relaxed increment por present via trampolim sobre
+// vkQueuePresentKHR. O overlay Kotlin (FpsCounterView) diferencia duas
+// leituras para calcular a taxa real do MOTOR.
+extern "C" std::atomic<uint64_t> g_rexrestuff_vk_present_count;
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_deivid22srk_restuff_game_NativeBridge_nativeGetPresentCount(JNIEnv*, jclass) {
+  return static_cast<jlong>(
+      g_rexrestuff_vk_present_count.load(std::memory_order_relaxed));
+}
+
+// ----------------------------------------------------------------------
+// Limite de FPS ao vivo — painel de ajustes rápidos (4 dedos).
+//
+// O fps_cap era boot-only (restuff.toml → cvar::LoadConfig): o usuário
+// trocava 30/60/90/120 nas Configurações e só via efeito no PRÓXIMO boot.
+// O cvar é o ponto único de verdade — o limiter de software do on_swap
+// (hooks.cpp) e o pacing do present thread (native_vk.cpp) o leem POR
+// ITERAÇÃO/FRAME — então escrever aqui aplica na hora, sem reiniciar:
+//   - cap > 0: present thread paceia para 1/cap (a taxa de
+//     vkQueuePresentKHR, que o contador de FPS mede, fica limitada);
+//   - cap = 0: "Ilimitado" (has_new + FIFO/vsync continuam limitando).
+// A persistência segue pelo PortSettings (mesma chave das Configurações,
+// gravada no fechamento do painel) → restuff.toml no próximo boot.
+//
+// THREADING: a escrita vai por rex::cvar::SetFlagByName — registry com
+// mutex, validação de range/validator e callbacks — em vez de atribuir o
+// storage direto. Os leitores (present thread, thread de render do guest)
+// leem o int32 cru por iteração: palavra alinhada de 4 bytes no arm64 não
+// sofre tearing e os loops têm chamadas opacas (sleep_for, funções
+// externas) que forçam o re-load — o MESMO padrão que o SDK usa para os
+// cvars lidos por-frame em outras threads (vsync worker lê REXCVAR_GET
+// (vsync) por ms). É a convenção do código base, documentada aqui.
+//
+// Definido em hooks.cpp, mesma librestuff.so — o declare resolve no link.
+// ----------------------------------------------------------------------
+REXCVAR_DECLARE(int32_t, fps_cap);
+
+// Espelho "escrito ao vivo" do cap: o toml foi gerado no getArguments()
+// ANTES do boot; se o usuário trocar o chip enquanto o motor ainda sobe,
+// o cvar::LoadConfig (dentro do ReXApp::SetupEnvironment) pisaria na
+// escolha com o valor antigo. O rex_app.cpp re-aplica este espelho logo
+// após o LoadConfig — fecha a janela de corrida do boot.
+extern "C" std::atomic<int32_t> g_rexrestuff_live_fps_cap{-1};
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_deivid22srk_restuff_game_NativeBridge_nativeSetFpsCap(JNIEnv*, jclass, jint fps) {
+  // Snap para o domínio do validador do cvar (hooks.cpp): n == 0 ou
+  // 20 <= n <= 240 — valores 1..19 seriam REJEITADOS pelo SetFlagByName e
+  // o cap ficaria com o valor antigo enquanto o Kotlin acha que mudou.
+  // (Os chips só mandam 0/30/60/90/120; isto é blindagem.)
+  int v = fps < 0 ? 0 : (fps > 240 ? 240 : fps);
+  if (v > 0 && v < 20) v = 20;
+  g_rexrestuff_live_fps_cap.store(v, std::memory_order_relaxed);
+  const bool ok = rex::cvar::SetFlagByName("fps_cap", std::to_string(v));
+  ALOG("fps_cap ao vivo -> %d (%s)", v, ok ? "ok" : "rejeitado pelo validador");
+}
+
 // ----------------------------------------------------------------------
 // SDL_main — fluxo principal do motor
 // ----------------------------------------------------------------------
@@ -163,6 +396,7 @@ int main(int argc, char** argv) {
   // Opções do launcher chegam como flags --restuff-*: traduz para o formato
   // que o restuff espera (env do hook de 60fps + env do config path).
   const char* app_files_dir = nullptr;
+  const char* log_file_path = nullptr;
   for (int i = 0; i < argc; ++i) {
     const char* a = argv[i];
     if (strncmp(a, "--app-files-dir=", 16) == 0) {
@@ -171,6 +405,23 @@ int main(int argc, char** argv) {
       // abortava o motor no InitLogging (create_directories /system/bin/logs).
       app_files_dir = a + 16;
       setenv("REX_ANDROID_FILES_DIR", app_files_dir, 1);
+    } else if (strncmp(a, "--native-lib-dir=", 17) == 0) {
+      // Port Android: nativeLibraryDir do app — casa dos hooks do AdrenoTools
+      // (libmain_hook.so etc., exigem useLegacyPackaging=true) e da própria
+      // libadrenotools.so. Lida por vulkan_instance.cpp ANTES de abrir o
+      // driver customizado.
+      setenv("REX_ANDROID_NATIVE_LIB_DIR", a + 17, 1);
+    } else if (strncmp(a, "--log-file=", 11) == 0) {
+      // Port Android: arquivo de log da sessão (storage público quando
+      // gravável) — usado pelo crash handler p/ persistir o backtrace e como
+      // sinalização p/ UI (o restuff.toml log_file aponta pro mesmo lugar).
+      log_file_path = a + 11;
+      setenv("RESTUFF_LOG_FILE", log_file_path, 1);
+    } else if (strncmp(a, "--log-level=", 12) == 0) {
+      // Port Android: nível de log pedido pelo launcher (toggle "Log
+      // detalhado"). Vale para a fase EARLY (InitLoggingEarly lê REX_LOG_LEVEL)
+      // e é coerente com o log_level do restuff.toml (mesma origem).
+      setenv("REX_LOG_LEVEL", a + 12, 1);
     } else if (strncmp(a, "--fps60=", 8) == 0) {
       if (strcmp(a + 8, "true") == 0) {
         setenv("RESTUFF_FPS60", "1", 1);
@@ -192,14 +443,67 @@ int main(int argc, char** argv) {
       setenv("RESTUFF_SPVCACHE_FILE", spv.c_str(), 1);
       setenv("RESTUFF_PIPE_CACHE", pipe.c_str(), 1);
       setenv("RESTUFF_PREWARM_FILE", prewarm.c_str(), 1);
+    } else if (strncmp(a, "--env=", 6) == 0) {
+      // perf/sd695-30fps v2 (15-e3): pass-through genérico KEY=VALUE para
+      // variáveis RESTUFF_* lidas por statics FUNCIONAIS (inicializados na
+      // primeira chamada, depois do SDL_main — a imensa maioria: todos os
+      // gates de diagnóstico do native_vk/hooks/xma/xthread/presenter).
+      // EXCEÇÕES conhecidas (statics de ESCOPO DE NAMESPACE, avaliados no
+      // dlopen do librestuff.so, ANTES daqui — o override aqui não os alcança):
+      // RESTUFF_DUMP_DRAWS, RESTUFF_EXT_TRUE, RESTUFF_EXTQPROBE
+      // (native_backend_vk.cpp). Cada aplicação é logada via ALOG e
+      // espelhada no log de ARQUIVO pela linha [ENV] (RestuffEnvSummary varre
+      // environ no início do present thread) — a corrida carrega a própria
+      // configuração.
+      const char* kv = a + 6;
+      if (const char* eq = strchr(kv, '=')) {
+        const std::string key(kv, eq - kv);
+        setenv(key.c_str(), eq + 1, 1);
+        ALOG("[env] %s", a + 6);
+      }
+    }
+  }
+
+  // perf/sd695-30fps v2 (15-e3): overrides de env de diagnóstico a partir de
+  // <files>/perf_env.txt (linhas KEY=VALUE; '#' comenta; linha vazia e espaço
+  // em branco à esquerda ignorados). Mesma motivação do --env=: a CORRIDA DE
+  // CONTROLE da instrumentação always-on tem que ser possível sem rebuild —
+  // com o arquivo, o usuário cria um texto com "RESTUFF_NO_GPUPASS=1" em
+  // Android/data/com.deivid22srk.restuff/files/ com qualquer gerenciador de
+  // arquivos e a próxima sessão roda o A/B. Cada linha aplicada é logada
+  // (ALOG + aparece no log de ARQUIVO via [ENV]) para que o log de campo
+  // seja auto-descritivo. Vars RESTUFF_* setadas aqui sobrevivem até a linha
+  // [ENV] — exceto as 3 exceções de statics de load-time (ver comentário do
+  // --env=). RENOMEIE/APAGUE o arquivo após o A/B: um arquivo esquecido
+  // re-aplica silenciosamente a cada sessão (detectável pela [ENV]).
+  if (app_files_dir != nullptr) {
+    char env_path[512];
+    snprintf(env_path, sizeof(env_path), "%s/perf_env.txt", app_files_dir);
+    if (FILE* f = fopen(env_path, "r")) {
+      char line[512];
+      while (fgets(line, sizeof(line), f)) {
+        if (char* nl = strchr(line, '\n')) *nl = '\0';
+        if (char* cr = strchr(line, '\r')) *cr = '\0';
+        // 15-e4: trim de espaços/tabs à esquerda — " KEY=1" com indentação
+        // setava uma var com espaço no nome (inócua mas confusa no [ENV]).
+        char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p == '#' || *p == '\0') continue;
+        char* eq = strchr(p, '=');
+        if (!eq || eq == p) continue;
+        *eq = '\0';
+        setenv(p, eq + 1, 1);
+        ALOG("[perf_env] %s=%s", p, eq + 1);
+      }
+      fclose(f);
     }
   }
 
   // Driver Vulkan customizado (padrão AdrenoTools/Turnip): o Driver Manager
   // (tela Configurações) persiste <files>/drivers/active.txt com
   // "lib=<caminho absoluto do .so>". Lê aqui, ANTES de qualquer init
-  // gráfico — o loader do SDK (vulkan_instance.cpp) faz dlopen nele e cai
-  // para o driver do sistema em caso de falha.
+  // gráfico — vulkan_instance.cpp carrega via libadrenotools (hooks) e cai
+  // para o driver do sistema em caso de falha, logando o motivo real.
   if (app_files_dir != nullptr) {
     char active_path[512];
     snprintf(active_path, sizeof(active_path), "%s/drivers/active.txt",
@@ -219,6 +523,72 @@ int main(int argc, char** argv) {
       fclose(f);
     }
   }
+
+  // Crash handler: o MAIS CEDO possível (args já parseados → caminhos
+  // conhecidos), antes de qualquer init do motor/threads/memória mapeada.
+  restuff_android::InstallCrashHandler(log_file_path, app_files_dir);
+
+  // Port Android: driver Vortek — camada de compatibilidade Vulkan
+  // (brunodev85/Winlator, LGPL-2.1; ver native/thirdparty/vortekrenderer/).
+  // Quando o driver ativo é o CLIENTE Vortek (libvulkan_vortek.so), o
+  // SERVIDOR sobe no MESMO processo, ANTES de qualquer init gráfico: socket
+  // Unix em <files>/vortek.sock + REX_VORTEK_SERVER_PATH para o cliente
+  // conectar. dlopen dinâmico (sem dependência de link — mesma estratégia do
+  // libadrenotools). Qualquer falha aqui segue para o driver do sistema:
+  // vulkan_instance.cpp faz o preflight do cliente (vortekInitOnce) e cai no
+  // loader do sistema quando o servidor não respondeu.
+  do {
+    const char* loader_path_vt = std::getenv("REX_VULKAN_LOADER_PATH");
+    if (loader_path_vt == nullptr ||
+        std::strstr(loader_path_vt, "libvulkan_vortek.so") == nullptr) {
+      break;
+    }
+    const char* native_lib_dir_vt = std::getenv("REX_ANDROID_NATIVE_LIB_DIR");
+    if (app_files_dir == nullptr || native_lib_dir_vt == nullptr ||
+        native_lib_dir_vt[0] == '\0') {
+      ALOG("Vortek: --native-lib-dir/files indisponíveis — usando driver do sistema");
+      break;
+    }
+
+    char renderer_path[512];
+    snprintf(renderer_path, sizeof(renderer_path), "%s/libvortekrenderer.so",
+             native_lib_dir_vt);
+    void* renderer_lib = dlopen(renderer_path, RTLD_NOW);
+    if (renderer_lib == nullptr) {
+      ALOG("Vortek: falha ao carregar %s: %s", renderer_path, dlerror());
+      break;
+    }
+
+    // API C de hospedagem (include/vortek_server_host.h do vortekrenderer).
+    using VortekInitFn = int (*)(const char*, const char*);
+    using VortekStartFn = int (*)(const char*, const void*);
+    auto vt_init = reinterpret_cast<VortekInitFn>(
+        dlsym(renderer_lib, "vortek_server_init"));
+    auto vt_start = reinterpret_cast<VortekStartFn>(
+        dlsym(renderer_lib, "vortek_server_start"));
+    if (vt_init == nullptr || vt_start == nullptr) {
+      ALOG("Vortek: API de hospedagem ausente em libvortekrenderer.so");
+      break;
+    }
+
+    // Driver host = SISTEMA (o caso de uso do Vortek: Mali e demais GPUs
+    // não-Adreno). vt_init já aceita um driver custom (padrão AdrenoTools)
+    // como segundo argumento para uma extensão futura.
+    if (vt_init(native_lib_dir_vt, nullptr) != 0) {
+      ALOG("Vortek: init do servidor falhou (detalhes no logcat, tag 'System.out')");
+      break;
+    }
+
+    char vortek_socket_path[512];
+    snprintf(vortek_socket_path, sizeof(vortek_socket_path), "%s/vortek.sock",
+             app_files_dir);
+    if (vt_start(vortek_socket_path, nullptr) != 0) {
+      ALOG("Vortek: servidor não subiu em %s", vortek_socket_path);
+      break;
+    }
+    setenv("REX_VORTEK_SERVER_PATH", vortek_socket_path, 1);
+    ALOG("Vortek: servidor ativo (%s); driver host = sistema", vortek_socket_path);
+  } while (false);
 
   // Hooks Android do SDK: dlopen de libc/libandroid no SDK + bootstrap JNI
   // da ponte SAF (JavaVM/Context do thread principal do SDL, antes de

@@ -23,10 +23,11 @@ import com.deivid22srk.restuff.viewmodel.DataSelectionViewModel
 import com.deivid22srk.restuff.settings.PortSettingsViewModel
 
 /**
- * Activity única do template. Todo o conteúdo é Jetpack Compose edge-to-edge
- * em MODO IMERSIVO (fullscreen de verdade): barras de sistema ocultas e
- * re-ocultadas sempre que o foco volta (diálogos, swipe temporário etc.).
- * O usuário as revela deslizando da borda — comportamento padrão de ports.
+ * Activity única do launcher do port. Todo o conteúdo é Jetpack Compose
+ * edge-to-edge em MODO IMERSIVO (fullscreen de verdade): barras de sistema
+ * ocultas e re-ocultadas sempre que o foco volta (diálogos, swipe
+ * temporário etc.). O usuário as revela deslizando da borda — comportamento
+ * padrão de ports.
  */
 class MainActivity : ComponentActivity() {
 

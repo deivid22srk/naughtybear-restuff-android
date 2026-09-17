@@ -1,0 +1,10 @@
+Vulkan headers bundled from KhronosGroup/Vulkan-Headers (Apache-2.0):
+- vk_platform.h, vulkan.h, vulkan_android.h, vulkan_core.h, vk_video/* :
+  mesma cópia embarcada em ../vortekrenderer/include/vulkan (VK_HEADER_VERSION 302,
+  proveniente de brunodev85/winlator-app)
+- vk_icd.h, vk_layer.h: KhronosGroup/Vulkan-Headers branch main (compatível com 302)
+
+Motivo: os headers do sysroot do NDK (r27) são mais antigos que os exigidos pelo
+vortek_serializer.h upstream (ex.: VK_EXT_map_memory_placed, ausente no NDK).
+O upstream builda o cliente no rootfs glibc (headers de sistema recentes); no
+port Android o NDK não os fornece — daí o bundle.
