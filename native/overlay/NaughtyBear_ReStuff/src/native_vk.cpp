@@ -1243,6 +1243,9 @@ void AthashWorkerMain() {
   // frame it is drawn, so it is picked up on the next 2ms pass).
   constexpr auto kActiveSleep = std::chrono::milliseconds(2);
   constexpr auto kIdleSleep = std::chrono::milliseconds(12);
+  // (e3 review) the idle stretch below subtracts the active sleep -- keep the
+  // constants' ordering enforced so a future edit cannot silently go negative.
+  static_assert(kIdleSleep > kActiveSleep, "idle sleep must exceed active sleep");
   while (!g_ath.stop.load(std::memory_order_relaxed)) {
     bool idle = true;
     {
@@ -5908,10 +5911,13 @@ bool ApplyDynamicRes(vk::VulkanDevice* dev) {
                   std::chrono::steady_clock::now() - t0)
                   .count());
   // (e2 review) the VRAM clamp inside EnsureSceneTarget may have LOWERED the
-  // scale below what we asked (preset>100 on a small heap). If so, pull the
-  // controller ceiling down to reality — otherwise it re-queues an "up"
-  // step every >=45 presents and each apply pays another device-idle hitch.
-  if (ResScalePct() != want) {
+  // scale below what we asked — but the clamp only engages above 100%, so
+  // gate the resync to that case (e3 review: firing it on the RESTORE path
+  // too permanently lowered the session ceiling after a rare alloc failure,
+  // and misattributed it to "VRAM clamp"). Without the resync the controller
+  // would re-queue an "up" step every >=45 presents and each apply would pay
+  // another device-idle hitch.
+  if (want > 100u && ResScalePct() != want) {
     g_drs.max_pct = std::clamp(ResScalePct(), g_drs.min_pct, g_drs.max_pct);
     REXLOG_WARN("[native_vk] M4.40 DRS: VRAM clamp effective scale {}% < requested {}% -- "
                 "ceiling lowered to match",
