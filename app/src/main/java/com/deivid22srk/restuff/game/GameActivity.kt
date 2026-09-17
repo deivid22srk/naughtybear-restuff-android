@@ -202,7 +202,12 @@ class GameActivity : SDLActivity() {
             // do SDL_main, então o override chega a tempo).
             "--env=RESTUFF_RES_SCALE=${settings.resScale.percent}",
             "--env=RESTUFF_ANISO=${settings.aniso.value}",
-        ) + (logFile?.let { arrayOf("--log-file=$it") } ?: emptyArray())
+        ) +
+            // M4.40 (perf/sd695-40fps): DRS — só enviamos o env quando LIGADO;
+            // desligado = nenhum RESTUFF_DRS no ambiente (o motor é opt-in e
+            // desktop/CI ficam no comportamento estático).
+            (if (settings.dynamicRes) arrayOf("--env=RESTUFF_DRS=1") else emptyArray()) +
+                (logFile?.let { arrayOf("--log-file=$it") } ?: emptyArray())
     }
 
     /** SDL3 estático dentro de librestuff.so — um único load. */

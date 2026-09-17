@@ -124,4 +124,45 @@ ParseResAniso(const char* e, float dflt) {
   return 16.0f;
 }
 
+// ---- M4.40 (perf/sd695-40fps): decisão pura do DRS -------------------------
+// O controlador do native_vk.cpp mantém o estado (agree/presents); a DECISÃO é
+// estas duas funções puras, testáveis em host (native/tests/test_res_scale.c).
+//
+// Direção que UMA janela de 30 presents "quer": 0 = nada, -1 = baixar, +1 =
+// subir. busy = (cyc - wait) por present em us (trabalho serial — imune ao
+// pacer de menus a 30fps, que estaciona em `wait`); draws/present >= 25 filtra
+// telas triviais. Margens assimétricas (1.30 para descer / 0.72 para subir)
+// porque a evidência de campo (log4, SD695) mostra o main pass a 92-97ms a
+// 100% — o downscale tem que ser agressivo e o upscale conservador.
+#ifdef __cplusplus
+inline
+#else
+static inline
+#endif
+int
+DrsWindowDirection(double busy_us, double draws_per_present, uint32_t cur_pct,
+                   uint32_t target_us, uint32_t min_pct, uint32_t max_pct) {
+  if (draws_per_present < 25.0) return 0;
+  if (busy_us > (double)target_us * 1.30 && cur_pct > min_pct) return -1;
+  if (busy_us < (double)target_us * 0.72 && cur_pct < max_pct) return 1;
+  return 0;
+}
+
+// Passo para a direção pedida: desce de 20 (chega no piso em ~3 passos desde
+// 100%), sobe de 10. Retorna 0 quando já está preso no limite (nada a fazer).
+#ifdef __cplusplus
+inline
+#else
+static inline
+#endif
+uint32_t
+DrsStepPct(int dir, uint32_t cur_pct, uint32_t min_pct, uint32_t max_pct) {
+  if (dir == 0) return 0u;
+  const int step = dir < 0 ? 20 : 10;
+  int64_t next = (int64_t)cur_pct + (int64_t)dir * step;
+  if (next < (int64_t)min_pct) next = (int64_t)min_pct;
+  if (next > (int64_t)max_pct) next = (int64_t)max_pct;
+  return (next == (int64_t)cur_pct) ? 0u : (uint32_t)next;
+}
+
 #endif  // RESTUFF_RES_SCALE_H

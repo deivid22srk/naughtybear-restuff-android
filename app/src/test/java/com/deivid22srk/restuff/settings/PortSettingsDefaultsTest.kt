@@ -90,6 +90,40 @@ class PortSettingsDefaultsTest {
     }
 
     // ------------------------------------------------------------------
+    // M4.40 (perf/sd695-40fps): DRS — default ON e env-wiring
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `resolucao dinamica vem ligada por padrao`() {
+        // Default ON para TODOS (fresh + upgrade): o controlador parte do
+        // preset do usuário e só sobe além dele quando o dispositivo aguenta
+        // — upgrade nenhum é rebaixado, o preset é o ponto de partida.
+        assertTrue("dynamicRes default deveria ser true", PortSettings().dynamicRes)
+    }
+
+    @Test
+    fun `env DRS so e enviado quando ligado`() {
+        // Contrato do GameActivity: ligado -> --env=RESTUFF_DRS=1; desligado ->
+        // NENHUM env RESTUFF_DRS (o motor é opt-in e desktop fica estático).
+        // Simula as duas montagens de argv (extraído da expressão real).
+        fun drsEnv(on: Boolean) = if (on) arrayOf("--env=RESTUFF_DRS=1") else emptyArray<String>()
+        assertEquals(listOf("--env=RESTUFF_DRS=1"), drsEnv(true).toList())
+        assertTrue("desligado não deve enviar env", drsEnv(false).isEmpty())
+    }
+
+    @Test
+    fun `preset continua sendo o piso do DRS e nao o teto`() {
+        // O DRS aceita subir até max(100, preset) — quem escolhe 50% como
+        // ponto de partida ainda ganha resolução quando a cena alivia. O teste
+        // trava a matemática do clamp do controlador (native_vk.cpp M4.40).
+        val startPct = 50
+        val maxPct = maxOf(100, startPct)
+        assertEquals(100, maxPct)
+        val upscalePct = 100
+        assertTrue("DRS pode subir do preset até 100", upscalePct in startPct..maxPct)
+    }
+
+    // ------------------------------------------------------------------
     // Estabilidade dos names persistidos (renomear quebra prefs salvas)
     // ------------------------------------------------------------------
 

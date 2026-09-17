@@ -352,6 +352,20 @@ fun SettingsScreen(
                     onSettingsChange { it.copy(sustainedPerf = checked) }
                 }
             )
+            Hairline()
+
+            // M4.40 (perf/sd695-40fps): DRS — o controlador de resolução
+            // dinâmica do renderer. Ajusta a escala interna sozinho para
+            // segurar ~40fps; o preset acima vira o ponto de partida.
+            ToggleRow(
+                label = "Resolução dinâmica (40fps)",
+                subtitle = "Ajusta a resolução interna sozinho (40–100%) para segurar 40 FPS. " +
+                    "O preset acima é o ponto de partida. Requer reiniciar o jogo.",
+                checked = settings.dynamicRes,
+                onChange = { checked ->
+                    onSettingsChange { it.copy(dynamicRes = checked) }
+                }
+            )
 
             SectionGap()
 

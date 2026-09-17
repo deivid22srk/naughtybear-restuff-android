@@ -1,5 +1,28 @@
 # Changelog — naughtybear-restuff-android
 
+## perf/sd695-40fps — DRS (resolução dinâmica) + verificação assíncrona de texturas (branch perf/sd695-40fps)
+
+Base: `feat/vortek-driver-icone` + o downscale fracionário M4.39 portado da
+`perf/sd695-ultra`. Evidência motriz (log 2026-09-17, SD695/Adreno 619):
+gameplay 8.8-10.6fps com **main pass de 92-97ms** e SDKMS `trk` = 52-116ms
+(**espera bloqueada de GPU**) — o "custo de CPU" de 79ms era majoritariamente
+o paint thread esperando a GPU; CPU serial real ≈ prep 22ms + captura ~15ms.
+
+| # | Mudança | Efeito esperado no SD695 |
+|---|---|---|
+| 1 | **M4.39 portado**: downscale fracionário 25-400% + presets Ultra/Perf/Equilibrado/Qualidade + aniso configurável + sustained perf mode | A 50%: ~4x menos pixels (main 92→~25-30ms) → sair de ~9fps para a casa dos 25-30fps |
+| 2 | **M4.40 DRS (novo)**: controlador de resolução dinâmica — mede o tempo **busy** do ciclo de present (cyc-wait, imune ao pacer de 30fps dos menus) a cada janela de 30 presents e ajusta a escala interna em passos de -20/+10% dentro de [40%..max(100%, preset)] com histerese (2 janelas concordantes, ≥45 presents entre mudanças), reconstruindo attachments da cena com `vkDeviceWaitIdle` no callback top (passes/pipelines jamais destruídos). Decisão pura em `renderer/res_scale.h` (`DrsWindowDirection`/`DrsStepPct`) com regressão host no CI | **Garantia adaptativa da meta**: cenas pesadas caem para 40% sozinhas (40% ≈ 1/6 dos pixels do 100%); cenas leves sobem de volta até o teto. Sem downgrade surpresa: o preset é ponto de partida |
+| 3 | **M4.41 (novo)**: verificador assíncrono de conteúdo de texturas — thread em cadência de 2ms re-hash continuamente o corpus amostrado (leitura pura da arena guest) e publica {hash, frame}; o prep aceita o resultado só quando computado ≥ `decoded_frame` da entrada (contra re-decodes espúrios). Kill-switch `RESTUFF_ASYNC_TEXHASH=0` + auto-off com qualquer diagnóstico de dump | Corta a maior fatia do `textures=31μs/draw` do PREPLOOP (~10MB/frame de leituras de verificação) do caminho serial: prep 22ms → ~14-17ms |
+| 4 | Fallback duplo do DRS: falha de rebuild → restaura a escala anterior (com teardown limpo do estado parcial); segunda falha → DRS desabilitado para sempre (nunca tela preta) | Segurança contra OOM/fragmentação de VRAM |
+| 5 | Toggle "Resolução dinâmica (40fps)" em Configurações (default ON, env `RESTUFF_DRS=1` só quando ligado — desktop/CI ficam estáticos) | Usuário controla; verbo claro |
+| 6 | Testes: `test_res_scale.c` 50→**71 checagens** (direção/step do DRS, clamps, bordas 1.30x); 3 testes JVM novos (default ON, contrato do env, preset=partida não teto) | Regressões de lógica pegadas em segundos no CI, antes do build de ~45min |
+
+Nota honesta: a meta de **40fps** no Adreno 619 depende de cena + térmica. O
+modo 50% + DRS (piso 40%) elimina o gargalo de fill e garante o **melhor FPS
+que o dispositivo entrega** em cada momento; se a cena ainda assim não segurar
+40fps, o FRAMEMS do log mostrará o próximo teto (prep/captura CPU) para a
+próxima iteração de otimização.
+
 ## perf/sd695-ultra — downscale fracionário + presets SD695 rumo a 40fps (branch perf/sd695-ultra)
 
 Evidência de campo (SD695/Adreno 619, Turnip, log 2026-09-17): gameplay 8-10fps

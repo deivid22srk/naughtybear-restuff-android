@@ -12,6 +12,7 @@
 #include <set>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -158,6 +159,11 @@ struct TexEntry {
   // persisting. Discarding it cut the shadow off / detached pieces of it as
   // the camera moved.
   bool resolved_once = false;
+  // M4.41 (perf/sd695-40fps): frame ordinal of the last decode/in-place
+  // refresh that set content_hash. The async verifier's results are only
+  // accepted when computed at-or-after this frame -- older results would
+  // compare against pre-decode bytes and force a spurious re-decode.
+  uint32_t decoded_frame = 0;
 };
 
 struct PendingUpload {
@@ -1163,6 +1169,138 @@ inline std::unordered_map<uint32_t, uint32_t>& RtFetchDims() {
   return m;
 }
 
+// ---- M4.41 (perf/sd695-40fps): async texture-content verification ------------
+// Field evidence (log4, PREPLOOP): the per-draw prep spent ~31us/draw in the
+// texture phase, and the bulk of it is GuestTextureContentHash re-reading the
+// FULL byte extent of every sampled guest texture, every frame, on the
+// present thread -- ~10MB/frame of pure verification reads on heavy scenes,
+// serial with everything else. The hash exists only to notice when the guest
+// streams new content into a reused heap address; it is read-only work over
+// stable mappings (the guest physical arena), which makes it perfectly
+// parallelizable onto an idle little core.
+//
+// Design: a single background verifier continuously re-hashes every ARMED
+// texture identity and publishes {hash, frames_rendered-at-completion}. The
+// prep path accepts a published result only when it was computed at-or-after
+// the entry's last decode frame (older results would compare against
+// pre-decode bytes and force a spurious re-decode); a not-yet-covered ident
+// falls back to the synchronous hash and arms the worker. Worst-case
+// behaviour is a change noticed one worker pass late (self-healing, unlike
+// the rejected period-8 scheme whose HUD sprite stayed wrong), or a torn
+// read during a concurrent guest write, which at worst triggers ONE extra
+// in-place refresh whose own decode reads the completed bytes.
+//
+// Kill switches / auto-off: RESTUFF_ASYNC_TEXHASH=0, and any texture dump /
+// bind-logging diagnostic (they must observe the synchronous path).
+namespace {
+struct AthashResult {
+  uint64_t hash = 0;
+  uint32_t frame = 0;   // dl.frames_rendered at hash completion
+};
+struct AthashArmRec {
+  renderer::GuestTextureDesc desc;
+  std::chrono::steady_clock::time_point wanted;
+};
+struct AthashState {
+  std::mutex mu;
+  std::condition_variable cv;
+  std::unordered_map<uint64_t, AthashArmRec> armed;    // ident -> desc snapshot
+  std::unordered_map<uint64_t, AthashResult> verified;  // ident -> last result
+  std::vector<uint64_t> sweep;                           // idents armed this pass
+  std::thread th;
+  std::atomic<bool> stop{false};
+  bool started = false;
+  bool failed = false;
+};
+AthashState g_ath;
+
+bool AthashAllowed() {
+  static const bool s_off = [] {
+    if (getenv("RESTUFF_ASYNC_TEXHASH") != nullptr &&
+        std::string_view(getenv("RESTUFF_ASYNC_TEXHASH")) == "0")
+      return true;
+    // Diagnostics that must observe the synchronous path.
+    const char* kDiags[] = {"RESTUFF_TEX_DUMP", "RESTUFF_DUMP_TEX", "RESTUFF_DUMP_TEX_RAW",
+                            "RESTUFF_TEXBIND_LOG", "RESTUFF_NO_HASH_MEMO"};
+    for (const char* d : kDiags)
+      if (getenv(d)) return true;
+    return false;
+  }();
+  return !s_off;
+}
+
+void AthashWorkerMain() {
+  std::vector<std::pair<uint64_t, renderer::GuestTextureDesc>> jobs;
+  while (!g_ath.stop.load(std::memory_order_relaxed)) {
+    {
+      std::unique_lock<std::mutex> lk(g_ath.mu);
+      g_ath.cv.wait_for(lk, std::chrono::milliseconds(2));
+      if (g_ath.stop.load(std::memory_order_relaxed)) return;
+      jobs.clear();
+      const auto now = std::chrono::steady_clock::now();
+      for (auto it = g_ath.armed.begin(); it != g_ath.armed.end();) {
+        // Sweep idents nobody sampled for 500ms (evicted/retired entries).
+        if (now - it->second.wanted > std::chrono::milliseconds(500)) {
+          it = g_ath.armed.erase(it);
+          continue;
+        }
+        jobs.emplace_back(it->first, it->second.desc);
+        ++it;
+      }
+    }
+    for (const auto& [ident, desc] : jobs) {
+      if (g_ath.stop.load(std::memory_order_relaxed)) return;
+      uint64_t h = 0;
+      try {
+        h = renderer::GuestTextureContentHash(desc);
+      } catch (...) {
+        g_ath.failed = true;  // permanent sync fallback; worker exits quietly
+        return;
+      }
+      const uint32_t fr = DL().frames_rendered.load(std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lk(g_ath.mu);
+      g_ath.verified[ident] = AthashResult{h, fr};
+    }
+  }
+}
+
+// Present-thread API. Arms (or refreshes) a texture identity for verification.
+void AthashArm(uint64_t ident, const renderer::GuestTextureDesc& tex) {
+  if (!AthashAllowed() || g_ath.failed) return;
+  std::lock_guard<std::mutex> lk(g_ath.mu);
+  if (!g_ath.started) {
+    g_ath.started = true;
+    g_ath.th = std::thread(AthashWorkerMain);
+    REXLOG_INFO("[native_vk] M4.41 async texture verifier started (2ms cadence)");
+  }
+  auto& rec = g_ath.armed[ident];
+  rec.desc = tex;
+  rec.wanted = std::chrono::steady_clock::now();
+}
+
+// Present-thread API. Returns the worker's verified hash for `ident` when it
+// was computed at-or-after `min_frame` (the entry's decoded_frame).
+bool AthashFetch(uint64_t ident, uint32_t min_frame, uint64_t& hash_out) {
+  if (!g_ath.started || g_ath.failed) return false;
+  std::lock_guard<std::mutex> lk(g_ath.mu);
+  auto it = g_ath.verified.find(ident);
+  if (it == g_ath.verified.end()) return false;
+  // Frame ordinals are 32-bit and wrap together (same source), so compare the
+  // difference, not the raw values.
+  if (int32_t(it->second.frame - min_frame) < 0) return false;
+  hash_out = it->second.hash;
+  return true;
+}
+
+void AthashShutdown() {
+  if (!g_ath.started) return;
+  g_ath.stop.store(true, std::memory_order_relaxed);
+  g_ath.cv.notify_all();
+  if (g_ath.th.joinable()) g_ath.th.join();
+  g_ath.started = false;
+}
+}  // namespace
+
 // Decode-and-cache a guest texture; returns the cache entry (view + set) or
 // nullptr on hard failure. The white 1x1 entry serves invalid/unsupported.
 const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::GuestTextureDesc& tex) {
@@ -1290,7 +1428,22 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
                           uint64_t(tex.format), uint64_t(tex.pitch_texels)})
       ident = (ident ^ part) * 1099511628211ull;
     auto [mit, fresh] = dl.content_hash_memo.emplace(ident, 0ull);
-    if (fresh) mit->second = renderer::GuestTextureContentHash(tex);
+    if (fresh) {
+      // M4.41 (perf/sd695-40fps): prefer the async verifier's hash when it
+      // covered this identity at-or-after the entry's last decode (a stale
+      // result would compare against pre-decode bytes and force a spurious
+      // re-decode). Unknown/old/failed -- or a brand-new identity -- hashes
+      // synchronously exactly as before, and (re)arms the worker either way.
+      AthashArm(ident, tex);
+      auto eit = dl.textures.find(key);
+      const uint32_t min_fr =
+          (eit != dl.textures.end() && eit->second.image != VK_NULL_HANDLE)
+              ? eit->second.decoded_frame
+              : 0u;
+      uint64_t wh = 0;
+      mit->second = AthashFetch(ident, min_fr, wh) ? wh
+                                                   : renderer::GuestTextureContentHash(tex);
+    }
     hash = mit->second;
   }
   const uint32_t mod_gen = renderer::texmod::ModGeneration();
@@ -1432,6 +1585,9 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
         e.height == h && e.vkfmt == want_fmt && e.mip_levels == mip_levels &&
         StageTexUpload(dev, e.image, w, h, up_data, up_bytes, mip_levels)) {
       e.content_hash = hash;
+      // M4.41: the in-place refresh is also a decode boundary for the async
+      // verifier -- results computed before it are pre-refresh bytes.
+      e.decoded_frame = uint32_t(dl.frames_rendered.load(std::memory_order_relaxed));
       // An in-place refresh must re-stamp the texture-mod generations too.
       // Without this the entry stays permanently stale: the cache check fails
       // every frame, re-decodes, refreshes in place, and fails again -- a
@@ -1514,6 +1670,8 @@ const TexEntry* ResolveTextureEntry(vk::VulkanDevice* dev, const renderer::Guest
     return nullptr;
   }
   t.content_hash = hash;
+  // M4.41: fresh decode -- stamp the boundary for the async verifier.
+  t.decoded_frame = uint32_t(dl.frames_rendered.load(std::memory_order_relaxed));
   t.mod_gen = mod_gen;
   t.hash_gen = hash_gen;
   static std::atomic<int> s_srgb_cnt{0}, s_lin_cnt{0};
@@ -4867,6 +5025,11 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
   //   0 scene_rp_clear:    clear color + depth (virgin / RESTUFF_SCENE_CLEAR)
   //   1 scene_rp_newframe: load color (EDRAM persists), clear depth (per frame)
   //   2 scene_rp_load:     load both (segments after a mid-frame resolve)
+  // M4.40 (perf/sd695-40fps): passes are size-independent and referenced by
+  // EVERY translated pipeline -- create them on the FIRST scene build only.
+  // A DRS rebuild (TeardownSceneAttachments) destroys images/FBs, never the
+  // passes/pipelines.
+  if (tl.scene_rp_clear == VK_NULL_HANDLE) {
   for (int variant = 0; variant < 5; ++variant) {
     const bool clear_color = variant == 0 || variant == 3 || variant == 4;
     const bool clear_depth = variant <= 1;
@@ -4945,6 +5108,7 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
                                        : &tl.scene_rp_clearcolor_cs;
     if (df.vkCreateRenderPass(dev->device(), &rp_ci, nullptr, out) != VK_SUCCESS) return false;
   }
+  }  // M4.40: first-build render-pass guard
 
   const VkImageView fb_views[2] = {tl.scene_view, tl.depth_view};
   VkFramebufferCreateInfo fb_ci = {};
@@ -5006,6 +5170,10 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
     sv.subresourceRange = vk::util::InitializeSubresourceRange();
     sv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;  // sampled views: ONE aspect
     if (df.vkCreateImageView(device, &sv, nullptr, &tl.depth_sample_view) == VK_SUCCESS) {
+      // M4.40 (perf/sd695-40fps): pool/set (and the M4.4 rp+pipeline below)
+      // survive a DRS rebuild -- only the view they bind changes, re-pointed
+      // lazily via fill_set_written=false (see TeardownSceneAttachments).
+      if (tl.fill_pool == VK_NULL_HANDLE) {
       VkDescriptorPoolSize fps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                   renderer::kMaxTexSlots};
       VkDescriptorPoolCreateInfo fdp = {};
@@ -5020,6 +5188,9 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
         fai.descriptorSetCount = 1;
         fai.pSetLayouts = &tl.tex_layout;
         df.vkAllocateDescriptorSets(device, &fai, &tl.fill_set);
+      }
+      } else {
+        tl.fill_set_written = false;  // M4.40: rebind to the fresh depth_sample_view
       }
       // The scale (*2) is this title's fog-group ratio: those passes run a
       // 640x360 viewport against the 1280x720 scene depth. gl_FragCoord is at
@@ -5089,7 +5260,10 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
                                                : kFillFSAlias;
       auto fvs = renderer::spc::CompileGlsl(kFillVS, /*is_vertex=*/true);
       auto ffs = renderer::spc::CompileGlsl(kFillFS, /*is_vertex=*/false);
-      if (!fvs.empty() && !ffs.empty() && tl.fill_set != VK_NULL_HANDLE) {
+      // M4.40: fill_pipeline is first-build only (renders into whatever the
+      // current aux depth image is; dynamic viewport/scissor already).
+      if (!fvs.empty() && !ffs.empty() && tl.fill_set != VK_NULL_HANDLE &&
+          tl.fill_pipeline == VK_NULL_HANDLE) {
         VkShaderModule fvm = vk::util::CreateShaderModule(dev, fvs.data(), fvs.size() * 4);
         VkShaderModule ffm = vk::util::CreateShaderModule(dev, ffs.data(), ffs.size() * 4);
         if (fvm && ffm) {
@@ -5173,7 +5347,9 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
   // M3.115 triple-move bounce, so each depth resolve costs one write of the
   // rect instead of three moves of it -- the resolve category measured 3.3ms
   // of the Ally's 16ms GPU frame. RESTUFF_NO_DEPTH_FILL=1 restores the bounce.
-  if (getenv("RESTUFF_NO_DEPTH_FILL") == nullptr && tl.fill_set != VK_NULL_HANDLE) {
+  // M4.40: first-build only (DRS rebuilds never touch passes/pipelines).
+  if (getenv("RESTUFF_NO_DEPTH_FILL") == nullptr && tl.fill_set != VK_NULL_HANDLE &&
+      tl.depth_fill_pipeline == VK_NULL_HANDLE) {
     VkAttachmentDescription at = {};
     at.format = kSceneDepthFormat;
     at.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -5275,7 +5451,8 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
                 tl.depth_fill_pipeline ? "ready" : "UNAVAILABLE (bounce fallback)");
   }
 
-  // Bounce buffer for scene -> resolve-dest copies.
+  // Bounce buffer for scene -> resolve-dest copies. M4.40: torn down with the
+  // scene attachments on a DRS rebuild (size = SceneW*SceneH*4).
   if (!vk::util::CreateDedicatedAllocationBuffer(
           dev, VkDeviceSize(SceneW()) * SceneH() * 4,
           VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -5284,15 +5461,17 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
     return false;
   }
   // M3.89: host-visible writeback capture buffer (8MB: several small resolves
-  // per frame at 4B/px).
-  if (!vk::util::CreateDedicatedAllocationBuffer(
-          dev, VkDeviceSize(8) << 20, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-          vk::util::MemoryPurpose::kUpload, tl.wb_buf, tl.wb_mem, &tl.wb_mem_type, nullptr)) {
-    REXLOG_ERROR("[native_vk] M3.89 writeback buffer create failed (writeback disabled)");
-  } else if (dev->functions().vkMapMemory(device, tl.wb_mem, 0, VK_WHOLE_SIZE, 0, &tl.wb_ptr) !=
-             VK_SUCCESS) {
-    tl.wb_ptr = nullptr;
-    REXLOG_ERROR("[native_vk] M3.89 writeback buffer map failed (writeback disabled)");
+  // per frame at 4B/px). M4.40: fixed-size, survives DRS rebuilds untouched.
+  if (tl.wb_buf == VK_NULL_HANDLE) {
+    if (!vk::util::CreateDedicatedAllocationBuffer(
+            dev, VkDeviceSize(8) << 20, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            vk::util::MemoryPurpose::kUpload, tl.wb_buf, tl.wb_mem, &tl.wb_mem_type, nullptr)) {
+      REXLOG_ERROR("[native_vk] M3.89 writeback buffer create failed (writeback disabled)");
+    } else if (dev->functions().vkMapMemory(device, tl.wb_mem, 0, VK_WHOLE_SIZE, 0,
+                                            &tl.wb_ptr) != VK_SUCCESS) {
+      tl.wb_ptr = nullptr;
+      REXLOG_ERROR("[native_vk] M3.89 writeback buffer map failed (writeback disabled)");
+    }
   }
 
   // M3.293: scene-tone pass objects. The tone is a scene property (fitted on
@@ -5301,7 +5480,10 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
   // by frame-level heuristics (a draw-count gate fried episode select; a
   // global present curve fried the title). Skipped entirely under
   // RESTUFF_NO_TONE=1.
-  if (getenv("RESTUFF_SCENE_TONE")) {  // M3.293 parked opt-in (see boundary note)
+  if (getenv("RESTUFF_SCENE_TONE") && tl.tone_pipeline == VK_NULL_HANDLE) {
+    // (M3.293 parked opt-in -- see boundary note. M4.40: first-build only AND
+    // a DRS blocker: the tone pipeline bakes a SceneW()xSceneH() viewport, so
+    // a rebuild would need a new pipeline -- out of scope for an opt-in diag.)
     VkImageCreateInfo tci = {};
     tci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     tci.imageType = VK_IMAGE_TYPE_2D;
@@ -5456,6 +5638,192 @@ bool EnsureSceneTarget(vk::VulkanDevice* dev) {
   // the number that decides whether a given machine can afford a scale at all.
   REXLOG_INFO("[native_vk] M2.4 scene target ready ({}x{}, res_scale={}%, ~{} MB attachments)",
               SceneW(), SceneH(), ResScalePct(), SceneAttachmentBytes(ResScalePct()) >> 20);
+  return true;
+}
+
+// ---- M4.40 (perf/sd695-40fps): DRS — Dynamic Resolution Scaling -------------
+// Field log (log4, SD695/Adreno 619, gameplay): main pass 92-97ms at 100%,
+// fps 8.8-10.6, GPU-bound (FRAMEMS wait~0, SDKMS trk = blocked-on-GPU). Pixel
+// count is the dominant cost, so the ONLY lever that holds a frame budget on
+// this class of device is rendering fewer pixels and letting the existing
+// M4.39 host->guest downscale-blits keep the guest byte-compatible. This
+// controller watches the present-cycle BUSY time (cyc - wait: serial work,
+// IMMUNE to the game's 30fps menu pacer, which parks in `wait`) and steps the
+// internal scale so busy <= target. Render passes/pipelines/samplers are
+// size-independent and are NEVER destroyed; only images/views/framebuffers/
+// the resolve bounce are rebuilt.
+//
+// Envs (the Android app passes RESTUFF_DRS=1 by default from Settings):
+//   RESTUFF_DRS=1              opt-in (desktop default off)
+//   RESTUFF_DRS_TARGET_MS=24   busy budget per present (default 24 -> 40fps+)
+//   RESTUFF_DRS_MIN=40         floor, in percent of 1280x720 (25..90)
+//   RESTUFF_DRS_MAX=<pct>      ceiling (default max(boot pct, 100))
+//   RESTUFF_NO_DRS=1           kill switch (overrides =1)
+// Blockers (parked diagnostics that bake SceneW() into pipelines or read the
+// scene mid-frame): RESTUFF_SCENE_TONE, RESTUFF_MID_DEPTH.
+namespace {
+struct DrsState {
+  bool on = false;
+  bool init_done = false;
+  bool broken = false;        // double-failure guard: never render nothing
+  uint32_t target_us = 24000;
+  uint32_t min_pct = 40;
+  uint32_t max_pct = 100;
+  int dir = 0;               // last window's wanted direction (-1 down, +1 up)
+  int agree = 0;             // consecutive windows agreeing on `dir`
+  uint64_t presents = 0;     // presents since the last applied change
+  uint64_t windows = 0;      // controller windows seen (boot grace)
+  std::atomic<uint32_t> pending{0};
+};
+DrsState g_drs;
+
+bool DrsInit() {
+  if (g_drs.init_done) return g_drs.on;
+  g_drs.init_done = true;
+  if (getenv("RESTUFF_NO_DRS") != nullptr) return false;
+  if (getenv("RESTUFF_DRS") == nullptr) return false;  // opt-in (app default)
+  const char* blocker1 = getenv("RESTUFF_SCENE_TONE");
+  const char* blocker2 = getenv("RESTUFF_MID_DEPTH");
+  if (blocker1 || blocker2) {
+    REXLOG_WARN("[native_vk] M4.40 DRS OFF: {} bakes the scene size into a pipeline",
+                blocker1 ? "RESTUFF_SCENE_TONE" : "RESTUFF_MID_DEPTH");
+    return false;
+  }
+  g_drs.on = true;
+  if (const char* e = getenv("RESTUFF_DRS_TARGET_MS"))
+    g_drs.target_us = std::clamp(uint32_t(atoi(e)), 10u, 50u) * 1000u;
+  if (const char* e = getenv("RESTUFF_DRS_MIN"))
+    g_drs.min_pct = std::clamp(uint32_t(atoi(e)), 25u, 90u);
+  uint32_t maxp = 100;
+  if (const char* e = getenv("RESTUFF_DRS_MAX")) maxp = std::clamp(uint32_t(atoi(e)), g_drs.min_pct, 400u);
+  g_drs.max_pct = std::max(maxp, std::min(ResScalePct(), 400u));
+  REXLOG_INFO(
+      "[native_vk] M4.40 DRS ON: target={}ms range=[{}..{}]% start={}%", g_drs.target_us / 1000,
+      g_drs.min_pct, g_drs.max_pct, ResScalePct());
+  return true;
+}
+}  // namespace
+
+// Destroy every scene-size-dependent attachment created by EnsureSceneTarget.
+// Caller guarantees the device is idle (vkDeviceWaitIdle). Render passes,
+// pipelines, layouts, pools, wb_buf and the guest-sized rt_tex set survive.
+// Idempotent; leaves tl.scene_ready=false so the next EnsureSceneTarget
+// rebuilds at whatever ResScalePct() then reads.
+void TeardownSceneAttachments(vk::VulkanDevice* dev) {
+  auto& tl = TL();
+  const auto& df = dev->functions();
+  VkDevice device = dev->device();
+  if (tl.scene_fb) df.vkDestroyFramebuffer(device, tl.scene_fb, nullptr);
+  tl.scene_fb = VK_NULL_HANDLE;
+  for (auto& ax : tl.aux) {
+    if (ax.fb) df.vkDestroyFramebuffer(device, ax.fb, nullptr);
+    if (ax.fb_shared_depth) df.vkDestroyFramebuffer(device, ax.fb_shared_depth, nullptr);
+    if (ax.view) df.vkDestroyImageView(device, ax.view, nullptr);
+    if (ax.img) df.vkDestroyImage(device, ax.img, nullptr);
+    if (ax.mem) df.vkFreeMemory(device, ax.mem, nullptr);
+    if (ax.depth_view) df.vkDestroyImageView(device, ax.depth_view, nullptr);
+    if (ax.depth_img) df.vkDestroyImage(device, ax.depth_img, nullptr);
+    if (ax.depth_mem) df.vkFreeMemory(device, ax.depth_mem, nullptr);
+    ax = TranslatedLayer::AuxSurface{};
+  }
+  if (tl.scene_view) df.vkDestroyImageView(device, tl.scene_view, nullptr);
+  if (tl.scene_img) df.vkDestroyImage(device, tl.scene_img, nullptr);
+  if (tl.scene_mem) df.vkFreeMemory(device, tl.scene_mem, nullptr);
+  tl.scene_view = VK_NULL_HANDLE;
+  tl.scene_img = VK_NULL_HANDLE;
+  tl.scene_mem = VK_NULL_HANDLE;
+  if (tl.depth_view) df.vkDestroyImageView(device, tl.depth_view, nullptr);
+  if (tl.depth_img) df.vkDestroyImage(device, tl.depth_img, nullptr);
+  if (tl.depth_mem) df.vkFreeMemory(device, tl.depth_mem, nullptr);
+  tl.depth_view = VK_NULL_HANDLE;
+  tl.depth_img = VK_NULL_HANDLE;
+  tl.depth_mem = VK_NULL_HANDLE;
+  if (tl.depth_sample_view) df.vkDestroyImageView(device, tl.depth_sample_view, nullptr);
+  tl.depth_sample_view = VK_NULL_HANDLE;
+  if (tl.resolve_buf) df.vkDestroyBuffer(device, tl.resolve_buf, nullptr);
+  if (tl.resolve_buf_mem) df.vkFreeMemory(device, tl.resolve_buf_mem, nullptr);
+  tl.resolve_buf = VK_NULL_HANDLE;
+  tl.resolve_buf_mem = VK_NULL_HANDLE;
+  // M3.115 lazy scratch: created at SceneW()xSceneH() on first use -- reset so
+  // the next depth 2x-decimation recreates it at the new scale.
+  if (tl.ds2x_img) df.vkDestroyImage(device, tl.ds2x_img, nullptr);
+  if (tl.ds2x_mem) df.vkFreeMemory(device, tl.ds2x_mem, nullptr);
+  tl.ds2x_img = VK_NULL_HANDLE;
+  tl.ds2x_mem = VK_NULL_HANDLE;
+  tl.ds2x_init = false;
+  // M3.99: the fill set still binds the OLD depth_sample_view -- re-write it
+  // lazily against the fresh one (pool/set/layout survive).
+  tl.fill_set_written = false;
+  tl.scene_ready = false;
+}
+
+// Controller tick: one 30-present window. Runs on the present thread inside
+// the [FRAMEMS] summary, BEFORE the accumulators reset. The DECISION lives in
+// res_scale.h (DrsWindowDirection/DrsStepPct — pure, host-tested); this keeps
+// only the state machine (agree counter + change cadence).
+void DrsControllerWindow(double busy_us_per_present, double draws_per_present) {
+  if (!DrsInit()) return;
+  ++g_drs.windows;
+  g_drs.presents += 30;
+  const uint32_t cur = ResScalePct();
+  // Boot grace: the first ~3 windows include pipeline-warmup spikes that say
+  // nothing about steady state.
+  const int dir =
+      g_drs.windows > 3
+          ? DrsWindowDirection(busy_us_per_present, draws_per_present, cur, g_drs.target_us,
+                               g_drs.min_pct, g_drs.max_pct)
+          : 0;
+  g_drs.agree = (dir != 0 && dir == g_drs.dir) ? g_drs.agree + 1 : (dir != 0);
+  g_drs.dir = dir;
+  // Two agreeing windows + >=45 presents between changes (see DrsStepPct for
+  // the asymmetric step sizes).
+  if (g_drs.agree >= 2 && g_drs.presents >= 45) {
+    const uint32_t next = DrsStepPct(dir, cur, g_drs.min_pct, g_drs.max_pct);
+    if (next != 0u) {
+      g_drs.pending.store(next, std::memory_order_relaxed);
+      REXLOG_INFO("[native_vk] M4.40 DRS: busy={:.1f}ms -> res {}% -> {}% queued",
+                  busy_us_per_present / 1000.0, cur, next);
+      g_drs.agree = 0;
+      g_drs.presents = 0;
+    }
+  }
+}
+
+// Apply a queued scale change at the safest point: present-thread callback
+// top, after this slot's fence wait. A full device wait covers the OTHER
+// in-flight slot (scene attachments are shared EDRAM emulation state), which
+// costs one frame hitch -- bounded by the >=45-presents change cadence.
+// Returns true when the scale actually changed.
+bool ApplyDynamicRes(vk::VulkanDevice* dev) {
+  const uint32_t want = g_drs.pending.exchange(0, std::memory_order_relaxed);
+  if (!want || g_drs.broken) return false;
+  auto& tl = TL();
+  if (!tl.scene_ready) return false;  // nothing built yet; drop the request
+  const uint32_t old = ResScalePct();
+  if (want == old) return false;
+  REXLOG_WARN("[native_vk] M4.40 DRS: rebuild {}% -> {}% ({}x{} -> {}x{})", old, want, SceneW(),
+              SceneH(), (kGuestW * want) / 100u, (kGuestH * want) / 100u);
+  const auto t0 = std::chrono::steady_clock::now();
+  dev->functions().vkDeviceWaitIdle(dev->device());
+  TeardownSceneAttachments(dev);
+  ResScaleSlot().store(want, std::memory_order_relaxed);
+  if (!EnsureSceneTarget(dev)) {
+    // Allocation failure at the new scale: fall back to the scale that was
+    // demonstrably working. Clean up whatever the failed attempt left
+    // half-created before retrying (EnsureSceneTarget is not transactional).
+    REXLOG_ERROR("[native_vk] M4.40 DRS rebuild at {}% FAILED -- restoring {}%", want, old);
+    TeardownSceneAttachments(dev);
+    ResScaleSlot().store(old, std::memory_order_relaxed);
+    if (!EnsureSceneTarget(dev)) {
+      REXLOG_ERROR("[native_vk] M4.40 DRS: restore failed too -- DRS disabled");
+      g_drs.broken = true;
+      return false;
+    }
+  }
+  REXLOG_INFO("[native_vk] M4.40 DRS: rebuild took {}ms",
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - t0)
+                  .count());
   return true;
 }
 
@@ -10846,6 +11214,12 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
           GpCollectSlot(dev, TL().slot_ix & 3);
         }
 
+        // M4.40 (perf/sd695-40fps): apply a queued DRS step HERE -- after this
+        // slot's fence wait (ApplyDynamicRes idles the device for the other
+        // in-flight slot, tears down the scene attachments and rebuilds them
+        // at the new scale). Rare by design (>=45-present cadence, logged).
+        ApplyDynamicRes(dev);
+
         // Resolve textures + build the frame's draws (may queue staging uploads
         // for this command buffer). Translated path = raw VB + on-GPU transform;
         // else the heuristic path = CPU-transformed Draw2DVertex.
@@ -11429,6 +11803,13 @@ bool NativeVulkanGraphicsSystem::PresentClearFrame() {
                 g_fm_prep_us / n / 1000.0, g_fm_rec_us / n / 1000.0,
                 g_fm_wb_us / n / 1000.0, g_fm_sdk_us / n / 1000.0, sdk_paint_ms, sdk_dn,
                 g_fm_gpuq_us / n / 1000.0, g_fm_draws / n);
+            // M4.40 (perf/sd695-40fps): DRS controller tick. busy = cyc -
+            // wait = the serial frame work (pacer/menu waits excluded), the
+            // signal that survives a 30fps-limited menu; the tick consumes it
+            // BEFORE the accumulators reset below.
+            DrsControllerWindow(
+                double(g_fm_cyc_us - std::min(g_fm_cyc_us, g_fm_wait_us)) / n,
+                double(g_fm_draws) / n);
             g_fm_cyc_us = g_fm_wait_us = g_fm_fence_us = 0;
             g_fm_prep_us = g_fm_rec_us = g_fm_wb_us = g_fm_sdk_us = 0;
             g_fm_gpuq_us = g_fm_draws = 0;
@@ -11551,6 +11932,9 @@ void NativeVulkanGraphicsSystem::Shutdown() {
       if (w.joinable()) w.join();
     tl.pipe_workers.clear();
   }
+  // M4.41 (perf/sd695-40fps): stop the async texture verifier (it only reads
+  // guest memory, but joining keeps shutdown deterministic like the pool).
+  AthashShutdown();
   if (provider_) {
     vk::VulkanDevice* dev = provider_->vulkan_device();
     if (dev) {

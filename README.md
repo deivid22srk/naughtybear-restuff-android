@@ -50,6 +50,19 @@ montáveis — escolha o arquivo do armazenamento do aparelho.
 ## Recursos do port
 
 - **Renderer nativo Vulkan** do ReStuff (shaderc compila GLSL→SPIR-V em runtime)
+- **Resolução interna configurável (M4.39)**: presets Ultra 50% / Perf 60% /
+  Equilibrado 75% / Qualidade 100% (`--env=RESTUFF_RES_SCALE`) — no Adreno 619
+  (SD695) a 50% renderiza 640x360 com downscale-blit host→guest, ~4x menos
+  pixels e attachments (179→~45 MB)
+- **Resolução dinâmica / DRS (M4.40)**: controlador sempre-medindo no present
+  thread que ajusta a escala interna sozinho (passos -20/+10% dentro de
+  40%..100%) para segurar ~40fps — cenas pesadas caem de resolução, cenas
+  leves sobem; o preset manual é o ponto de partida. Toggle em Configurações;
+  kill-switch `RESTUFF_NO_DRS=1`
+- **Verificador de texturas assíncrono (M4.41)**: a checagem de conteúdo
+  (re-hash por frame) roda numa thread paralela em vez do caminho serial do
+  frame — corta ~31μs/draw do prep em gameplay (`RESTUFF_ASYNC_TEXHASH=0`
+  desliga)
 - **Virtual gamepad minimalista** translúcido (padrão Xbox 360, P1 via SDL
   virtual joystick) com ajuste de opacidade/tamanho e haptics
 - **Gamepads Bluetooth/USB** (P2+) via pipeline HID do SDL3

@@ -113,6 +113,14 @@ data class PortSettings(
     // num patamar sustentável em vez de pico-then-throttle — emulador que
     // esquenta o SD695 em 3 min cai de 30fps para 15fps sem isto.
     val sustainedPerf: Boolean = true,
+    // M4.40 (perf/sd695-40fps): resolução dinâmica (DRS) → env RESTUFF_DRS.
+    // O renderer mede o tempo BUSY do ciclo de present (cyc-wait, imune ao
+    // pacer de menus a 30fps) e ajusta a escala interna em passos de 20/10%
+    // dentro de [40..max(100, preset)]% segurando ~40fps — reconstruindo os
+    // attachments da cena entre frames (passes/pipelines nunca são tocados).
+    // O preset manual (resScale) é o PONTO DE PARTIDA; kill-switch no motor:
+    // RESTUFF_NO_DRS=1.
+    val dynamicRes: Boolean = true,
     // Contador de FPS sobre o jogo: lê o total de vkQueuePresentKHR do
     // dispositivo Vulkan (contado por um trampoline no vulkan_device.cpp)
     // e calcula a taxa no próprio overlay — nada de estimativa por
@@ -164,6 +172,7 @@ class PortSettingsRepository(private val appContext: Context) {
             resScale = enumOf(prefs.getString(K_RESSCALE, null), resScaleDefault(hasPriorPrefs)),
             aniso = enumOf(prefs.getString(K_ANISO, null), anisoDefault(hasPriorPrefs)),
             sustainedPerf = prefs.getBoolean(K_SUSTAINED, true),
+            dynamicRes = prefs.getBoolean(K_DRS, true),
             showFpsCounter = prefs.getBoolean(K_SHOW_FPS, false),
             unlockAllCheat = prefs.getBoolean(K_UNLOCK_ALL, false),
             unlock60Fps = prefs.getBoolean(K_UNLOCK_60FPS, true),
@@ -185,6 +194,7 @@ class PortSettingsRepository(private val appContext: Context) {
             .putString(K_RESSCALE, s.resScale.name)
             .putString(K_ANISO, s.aniso.name)
             .putBoolean(K_SUSTAINED, s.sustainedPerf)
+            .putBoolean(K_DRS, s.dynamicRes)
             .putBoolean(K_SHOW_FPS, s.showFpsCounter)
             .putBoolean(K_UNLOCK_ALL, s.unlockAllCheat)
             .putBoolean(K_UNLOCK_60FPS, s.unlock60Fps)
@@ -216,6 +226,7 @@ class PortSettingsRepository(private val appContext: Context) {
         const val K_RESSCALE = "restuff_res_scale"
         const val K_ANISO = "restuff_aniso"
         const val K_SUSTAINED = "sustained_perf"
+        const val K_DRS = "dynamic_res"
         const val K_SHOW_FPS = "show_fps_counter"
         const val K_UNLOCK_ALL = "restuff_unlock_all"
         const val K_UNLOCK_60FPS = "restuff_unlock_60fps"
