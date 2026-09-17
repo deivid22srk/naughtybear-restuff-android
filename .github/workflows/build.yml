@@ -38,8 +38,15 @@ jobs:
           echo "CC=clang-19" >> "$GITHUB_ENV"
           echo "CXX=clang++-19" >> "$GITHUB_ENV"
 
+      # 2026-09-17: o default da action instala o pacote obsoleto "tools"
+      # (removido do repositório do Google — "Failed to find package 'tools'",
+      # quebra TODAS as branches, ver main run 35217001332). Só precisamos do
+      # cmdline-tools (já vem com a action) + platform-tools; platform,
+      # build-tools e NDK vêm no step seguinte.
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android packages (platform, build-tools, NDK)
         run: |
