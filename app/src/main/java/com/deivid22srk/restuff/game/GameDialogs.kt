@@ -450,7 +450,9 @@ class QuickSettingsDialog(
         val row = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minHeight = dp(c, 56f)
+            // View.setMinimumHeight (em LinearLayout a propriedade é
+            // minimumHeight — minHeight é de TextView; build e1 falhou aqui).
+            minimumHeight = dp(c, 56f)
             setPadding(0, dp(c, 8f), 0, dp(c, 8f))
             // Linha INTEIRA clicável (idem portClickable do ToggleRow): alvo
             // de toque confortável em qualquer densidade. Haptic idem
