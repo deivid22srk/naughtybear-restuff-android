@@ -441,6 +441,11 @@ class QuickSettingsDialog(
             // pelo próprio widget.
             contentDescription = "$label — $subtitle"
             setOnCheckedChangeListener { _, value -> onUpdate(value) }
+            // Haptic também no tap DIRETO no widget (tap na linha vibra no
+            // listener da row; tap no switch não passa por ele). O
+            // performClick do CompoundButton faz o toggle E chama este
+            // listener — ordem segura, sem duplo haptic em nenhum caminho.
+            setOnClickListener { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
         }
         val row = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -509,6 +514,10 @@ class QuickSettingsDialog(
                 setTextColor(COL_TEXT)
                 textSize = 15f
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                // Fundido no contentDescription do SeekBar abaixo (e2: sem
+                // isto o TalkBack anunciava o label DUAS vezes — nó texto +
+                // nó slider).
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
             addView(valueView)
