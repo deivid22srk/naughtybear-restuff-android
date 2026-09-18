@@ -52,6 +52,17 @@ object NativeBridge {
     external fun nativeSetFpsCap(fps: Int)
 
     /**
+     * "Tela cheia" ao vivo (painel de 4 dedos / Configurações): escreve no
+     * cvar `restuff_fullscreen_stretch` do motor (definido no overlay do
+     * presenter Vulkan). O presenter o lê a CADA paint e, quando ativo,
+     * troca o aspect 16:9 do guest pelo aspect REAL do swapchain — a imagem
+     * 1280x720 passa a cobrir a tela inteira de ponta a ponta (esticada,
+     * como um jogo mobile nativo), em vez do letterbox 16:9 com barras.
+     * Aplica no próximo quadro, sem reiniciar; desligar volta às barras.
+     */
+    external fun nativeSetFullscreenStretch(enabled: Boolean)
+
+    /**
      * Envia o estado consolidado do gamepad virtual (overlay) ao SDL virtual
      * joystick P1. Chamado a cada frame de toque (throttled pelo overlay).
      *

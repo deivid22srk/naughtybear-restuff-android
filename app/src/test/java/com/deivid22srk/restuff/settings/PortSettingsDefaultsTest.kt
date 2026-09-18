@@ -101,6 +101,33 @@ class PortSettingsDefaultsTest {
         assertTrue("dynamicRes default deveria ser true", PortSettings().dynamicRes)
     }
 
+    // ------------------------------------------------------------------
+    // feat/ui-painel-fullscreen: "Tela cheia" — default OFF e wiring
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `tela cheia vem desligada por padrao`() {
+        // Default OFF: preservar o letterbox 16:9 de quem não pediu — o
+        // esticamento muda a proporção da imagem (1.25x horizontal num
+        // 20:9) e deve ser uma ESCOLHA, nunca um default silencioso.
+        assertEquals("fullscreenStretch default deveria ser false", false, PortSettings().fullscreenStretch)
+    }
+
+    @Test
+    fun `tela cheia roundtrip do preset`() {
+        // O toggle é um copy() puro como os demais campos — grava/le pela
+        // mesma chave das Configurações e do painel de 4 dedos
+        // (fullscreen_stretch), aplicando ao vivo pelo mesmo caminho do
+        // fps_cap (cvar kRuntime sobrevive ao LoadConfig).
+        val off = PortSettings()
+        val on = off.copy(fullscreenStretch = true)
+        assertEquals(false, off.fullscreenStretch)
+        assertEquals(true, on.fullscreenStretch)
+        // Os outros campos seguem intactos no copy (não vaza estado).
+        assertEquals(off.fpsLimit, on.fpsLimit)
+        assertEquals(off.resScale, on.resScale)
+    }
+
     @Test
     fun `env DRS so e enviado quando ligado`() {
         // SPEC TEST (não executa GameActivity — trava o contrato da expressão

@@ -50,6 +50,19 @@
 REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                     "Clear render pass during presentation");
 
+// PORT (feat/ui-painel-fullscreen): "Tela cheia" do painel de 4 dedos.
+// Quando ativo, o aspect do guest deixa de ser 16:9 e passa a ser o aspect
+// REAL da superfície Android (ex.: 20:9 num SD695) — o fit do
+// GetGuestOutputPaintFlow produz então um retângulo de saída que cobre a
+// superfície INTEIRA (sem letterbox): a imagem 1280x720 é esticada de ponta
+// a ponta, como um jogo mobile nativo. O cvar é lido A CADA PAINT (o mesmo
+// contrato de present_letterbox, também escrito em runtime) e a escrita vem
+// do JNI nativeSetFullscreenStretch (android_main.cpp) — persistido nas
+// mesmas prefs do painel/Configurações.
+REXCVAR_DEFINE_BOOL(restuff_fullscreen_stretch, false, "UI/Presenter",
+                    "Stretch guest output to the entire surface (mobile-style fullscreen) "
+                    "instead of letterboxing at 16:9");
+
 REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_immediate, true, "UI/Vulkan",
                     "Allow immediate present mode (no vsync)");
 
@@ -1735,8 +1748,42 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   if (guest_output_image) {
     VkExtent2D max_framebuffer_extent =
         util::GetMax2DFramebufferExtent(vulkan_device_->properties());
+    // PORT (feat/ui-painel-fullscreen): cópia local das propriedades — quando
+    // a "Tela cheia" está ativa, trocamos o aspect 16:9 do guest pelo aspect
+    // DO SWAPCHAIN. O fit a seguir (imutável, do SDK) resolve: aspect ==
+    // aspect do RT → retângulo de saída = RT inteiro (superfície inteira,
+    // pois o swapchain é criado IDENTITY/preTransform com o tamanho da
+    // superfície — ver CreateSwapchainForVulkanSurface), letterbox vazio e a
+    // cadeia de efeitos recalculada para o tamanho final real. Como o cvar é
+    // lido por paint, o toggle do painel de 4 dedos aplica NO PRÓXIMO quadro
+    // — sem reiniciar. Desligado: flu exatamente como antes (16:9 com
+    // barras), byte a byte.
+    GuestOutputProperties guest_output_properties_for_flow = guest_output_properties;
+    const bool stretch_to_full_surface =
+        REXCVAR_GET(restuff_fullscreen_stretch) &&
+        guest_output_properties_for_flow.IsActive() && paint_context_.swapchain_extent.width &&
+        paint_context_.swapchain_extent.height;
+    // Log de TRANSIÇÃO (uma linha por virada, não por frame): diagnóstico do
+    // toggle ao vivo sem poluir o log de campo.
+    static std::atomic<bool> s_fullscreen_stretch_last{false};
+    if (stretch_to_full_surface != s_fullscreen_stretch_last.exchange(stretch_to_full_surface)) {
+      if (stretch_to_full_surface) {
+        REXLOG_INFO(
+            "VulkanPresenter: restuff_fullscreen_stretch ON — guest output covers the entire "
+            "swapchain {}x{} (mobile-style fullscreen)",
+            paint_context_.swapchain_extent.width, paint_context_.swapchain_extent.height);
+      } else {
+        REXLOG_INFO("VulkanPresenter: restuff_fullscreen_stretch OFF — 16:9 letterbox fit");
+      }
+    }
+    if (stretch_to_full_surface) {
+      guest_output_properties_for_flow.display_aspect_ratio_x =
+          paint_context_.swapchain_extent.width;
+      guest_output_properties_for_flow.display_aspect_ratio_y =
+          paint_context_.swapchain_extent.height;
+    }
     GuestOutputPaintFlow guest_output_flow = GetGuestOutputPaintFlow(
-        guest_output_properties, paint_context_.swapchain_extent.width,
+        guest_output_properties_for_flow, paint_context_.swapchain_extent.width,
         paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
         max_framebuffer_extent.height, guest_output_paint_config);
     if (guest_output_flow.effect_count) {

@@ -1,5 +1,46 @@
 # Changelog — naughtybear-restuff-android
 
+## feat/ui-painel-fullscreen — painel de 4 dedos reestilizado + Tela cheia (branch feat/ui-painel-fullscreen)
+
+Duas frentes na mesma entrega:
+
+**1. Painel de ajustes rápidos (4 dedos) na MESMA qualidade da UI de
+Configurações.** O painel era construído com Views de plataforma numa
+linguagem própria (cards por linha, moldura âmbar, raio 26): funcionava, mas
+não era a identidade do app. Reescrito como espelho EXATO dos primitivos da
+SettingsScreen/PortScreenTheme em Views: paleta idêntica (superfície
+`0xFF14141A`, texto `0xFFF2F2F5`/`0xFF8E8E99`/`0xFF7E7E88`, hairline branco
+8%, ghost border, âmbar único + onAccent), tipografia idêntica (título 22sp
+medium, labels 15sp, subs 12sp, rótulos em versalete 10.5sp semibold
+letter-spacing 2.5sp, chips 12.5sp, valor mono), raios idênticos (Sm 10 /
+Md 12 / Lg 18) e a mesma GRAMÁTICA flat editorial: **sem caixas por linha**,
+hairlines entre linhas, respiro 30dp entre seções, linha do mel (2dp×28dp
+âmbar) sob o título, UM alvo de peso (CTA âmbar). Seções reorganizadas:
+TELA (tela cheia, contador de FPS), CONTROLES, DESEMPENHO (chips de FPS em
+linha rolável que nunca corta, idem ChoiceChipsRow). Estrutura preservada
+(header/rodapé fixos + miolo rolável — botão primário sempre visível em
+landscape); comportamento ao vivo + persistência com debounce intactos. O
+ExitConfirmDialog herdou a mesma gramática.
+
+**2. Toggle "Tela cheia"** — preenche a tela INTEIRA do aparelho (aspect
+real, ex. 20:9) em vez do letterbox 16:9 com barras pretas, como um jogo
+mobile nativo:
+
+| Peça | Como |
+|---|---|
+| Nativo | Cvar `restuff_fullscreen_stretch` (novo, overlay do `vulkan_presenter.cpp` — lido A CADA paint). Quando ativo, o aspect do guest deixa de ser 16:9 e passa a ser o aspect do swapchain: o fit do `GetGuestOutputPaintFlow` (SDK, imutável) resolve retângulo de saída = RT inteiro, letterbox vazio, cadeia de efeitos recalculada para o tamanho real. Log de transição (uma linha por virada) para diagnóstico de campo |
+| JNI | `nativeSetFullscreenStretch(Boolean)` → `rex::cvar::SetFlagByName` (mesma via do `fps_cap` ao vivo; escrita kRuntime sobrevive ao `cvar::Init`/`LoadConfig`) |
+| UI | Toggle no painel de 4 dedos (seção TELA) e nas Configurações (Desempenho) — ambos vivem da MESMA chave (`fullscreen_stretch`) |
+| Aplicação | AO VIVO no próximo quadro (sem reiniciar); no boot, o `applyOverlaySettings` do `onCreate` re-envia a pref antes do primeiro paint |
+| Default | OFF (o esticamento muda a proporção da imagem — 1.25x horizontal num 20:9 — e é uma escolha do usuário, nunca default silencioso) |
+| Testes | 2 JVM novos: default OFF + roundtrip do copy sem vazamento de estado |
+
+Validação local: TU inteiro do overlay `vulkan_presenter.cpp` compilado
+`g++ -fsyntax-only -std=c++23` contra os headers reais do rexglue-sdk
+(sem erros); mini-TU inicial pegou o hazard de acesso (membro privado
+`surface_*_in_paint_connection_` — corrigido para `paint_context_.swapchain_extent`,
+acessível e de mesmo aspect graças ao preTransform IDENTITY).
+
 ## fix(build) — erros de compilação do build #91 (branch perf/sd695-40fps)
 
 O run #91 (steps 88/89 do workflow, commit ca99f8c) falhou no "Native Android

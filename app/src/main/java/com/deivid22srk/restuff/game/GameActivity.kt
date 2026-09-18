@@ -52,6 +52,9 @@ class GameActivity : SDLActivity() {
     /** Último cap enviado ao motor — evita JNI+log a cada tick de slider. */
     private var lastAppliedFpsCap = Int.MIN_VALUE
 
+    /** Último estado da "Tela cheia" enviado ao motor (mesmo gate do cap). */
+    private var lastAppliedFullscreenStretch: Boolean? = null
+
     private companion object {
         /** Nº de dedos simultâneos que abre o painel de ajustes rápidos. */
         const val MENU_FINGERS = 4
@@ -481,6 +484,18 @@ class GameActivity : SDLActivity() {
             pad.visibility = if (s.showOverlayControls) View.VISIBLE else View.GONE
         }
         setFpsCounterVisible(s.showFpsCounter)
+        // "Tela cheia" ao vivo (feat/ui-painel-fullscreen): cvar lido por
+        // paint pelo presenter — o toggle do painel de 4 dedos (ou o boot
+        // com a pref ligada) aplica NO PRÓXIMO quadro, sem reiniciar. O
+        // onCreate chama isto ANTES do primeiro paint do SDL_main — a
+        // escrita kRuntime sobrevive ao cvar::Init/LoadConfig (precedência
+        // de source do registry, mesmo mecanismo do fps_cap).
+        if (s.fullscreenStretch != lastAppliedFullscreenStretch) {
+            lastAppliedFullscreenStretch = s.fullscreenStretch
+            if (NativeBridge.loaded) {
+                runCatching { NativeBridge.nativeSetFullscreenStretch(s.fullscreenStretch) }
+            }
+        }
         // Limite de FPS ao vivo: mesmo cvar fps_cap que o restuff.toml carrega
         // no boot — o present thread e o limiter do guest leem por iteração.
         // Gate: só cruza o JNI quando o cap MUDA (arrastar slider de opacidade

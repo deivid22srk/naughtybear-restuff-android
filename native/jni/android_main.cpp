@@ -385,6 +385,28 @@ Java_com_deivid22srk_restuff_game_NativeBridge_nativeSetFpsCap(JNIEnv*, jclass, 
 }
 
 // ----------------------------------------------------------------------
+// "Tela cheia" ao vivo (painel de 4 dedos / Configurações).
+//
+// Escreve o cvar `restuff_fullscreen_stretch` (DEFINIDO no overlay
+// vulkan_presenter.cpp, mesma librestuff.so — registrado no static-init da
+// .so, antes do primeiro paint). O presenter o lê A CADA PAINT e, quando
+// ativo, troca o aspect 16:9 do guest pelo aspect do swapchain: a saída
+// cobre a tela INTEIRA (estica, como um jogo mobile) — sem reiniciar.
+// Desligar volta ao letterbox 16:9 no próximo quadro. Persistência segue
+// pelo PortSettings (fullscreen_stretch) → re-aplicado no onCreate da
+// próxima sessão (applyOverlaySettings). Cvar bool sem validador custom:
+// SetFlagByName("true"/"false") é sempre aceito.
+// ----------------------------------------------------------------------
+extern "C" JNIEXPORT void JNICALL
+Java_com_deivid22srk_restuff_game_NativeBridge_nativeSetFullscreenStretch(
+    JNIEnv*, jclass, jboolean enabled) {
+  const bool ok = rex::cvar::SetFlagByName(
+      "restuff_fullscreen_stretch", enabled ? "true" : "false");
+  ALOG("fullscreen_stretch ao vivo -> %s (%s)",
+       enabled ? "on" : "off", ok ? "ok" : "rejeitado pelo validador");
+}
+
+// ----------------------------------------------------------------------
 // SDL_main — fluxo principal do motor
 // ----------------------------------------------------------------------
 

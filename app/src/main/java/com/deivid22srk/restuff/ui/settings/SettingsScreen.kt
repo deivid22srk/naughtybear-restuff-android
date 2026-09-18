@@ -193,6 +193,21 @@ fun SettingsScreen(
             )
             Hairline()
 
+            // feat/ui-painel-fullscreen: o mesmo toggle do painel de 4 dedos
+            // — cvar restuff_fullscreen_stretch lido por paint pelo
+            // presenter Vulkan. Vale ao abrir o jogo; em jogo, o painel de
+            // 4 dedos aplica NA HORA.
+            ToggleRow(
+                label = "Tela cheia",
+                subtitle = "Preenche toda a tela do aparelho (estica além de 16:9), como um " +
+                    "jogo mobile — sem as barras pretas. Vale ao abrir o jogo",
+                checked = settings.fullscreenStretch,
+                onChange = { checked ->
+                    onSettingsChange { it.copy(fullscreenStretch = checked) }
+                }
+            )
+            Hairline()
+
             SettingLabel("Limite de FPS")
             Spacer(Modifier.height(10.dp))
             ChoiceChipsRow(

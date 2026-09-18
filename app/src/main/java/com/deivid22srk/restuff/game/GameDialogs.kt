@@ -10,54 +10,77 @@ import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import androidx.compose.ui.graphics.toArgb
+import com.deivid22srk.restuff.config.PortBranding
 import com.deivid22srk.restuff.settings.FpsLimitOption
 import com.deivid22srk.restuff.settings.PortSettings
+import com.deivid22srk.restuff.ui.theme.PortPalette
 import kotlin.math.roundToInt
 
 /**
- * Diálogos do jogo — design "Mel & Carvão" (a mesma identidade do launcher).
+ * Diálogos do jogo — design "Mel & Carvão", FLAT EDITORIAL.
  *
- * Construídos com Views de plataforma (sem Compose): a [GameActivity] estende
- * SDLActivity, que é uma Activity pura — ComposeView exigiria donos de
- * lifecycle manuais. O visual vem da paleta do port: carvão translúcido,
- * âmbar do urso (#F2C14E), tipografia sans-serif-medium e cantos generosos.
+ * Espelho EM VIEWS DE PLATAFORMA dos mesmos primitivos da tela de
+ * Configurações (SettingsScreen.kt / PortScreenTheme.kt): a mesma paleta
+ * exata (carvão de superfície, texto off-white quente, um único acento
+ * âmbar), a mesma tipografia (rótulos em versalete com letter-spacing,
+ * labels 15sp medium, subs 12sp, chips 12.5sp semibold), a mesma GRAMÁTICA
+ * visual — SEM caixas/cartões por linha: hairlines entre linhas, respiro
+ * de 30dp entre seções, UM alvo de peso por diálogo (o CTA âmbar).
+ *
+ * Construído com Views de plataforma (sem Compose): a [GameActivity]
+ * estende SDLActivity, uma Activity pura — ComposeView exigiria donos de
+ * lifecycle manuais.
  *
  * - [QuickSettingsDialog]: painel de ajustes (aberto com 4 dedos em qualquer
- *   ponto da tela): controles na tela, opacidade, tamanho, vibração, LIMITE
- *   DE FPS (chips 30/40/60/90/120/∞ — aplica ao vivo no cvar fps_cap do motor,
- *   sem reiniciar) e contador de FPS. Mudanças aplicam AO VIVO (o jogo
- *   continua rodando atrás) e persistem nas mesmas chaves da tela de
- *   Configurações (gravação única no fechamento — debounce).
+ *   ponto da tela): TELA (tela cheia mobile-style, contador de FPS),
+ *   CONTROLES (overlay, opacidade, tamanho, vibração) e DESEMPENHO (limite
+ *   de FPS em chips — aplica ao vivo no cvar fps_cap do motor). Mudanças
+ *   aplicam AO VIVO (o jogo continua rodando atrás) e persistem nas mesmas
+ *   chaves da tela de Configurações (gravação única no fechamento —
+ *   debounce).
  * - [ExitConfirmDialog]: confirmação do botão voltar — "voltar para a tela
  *   inicial?".
  *
  * ESTRUTURA do painel (lição da 1ª versão, que cortava os botões em
  * landscape): cabeçalho e rodapé de ações são FIXOS; só o miolo rola. O
  * conteúdo tem ~620dp para ~360-420dp úteis em landscape — um ScrollView
- * solto empurrava "Voltar ao jogo" para FORA da tela (ação mais frequente,
+ * solto empurraria "Voltar ao jogo" para FORA da tela (ação mais frequente,
  * a menos acessível). Agora: header fixo + [ScrollView weight=1] + ações
  * fixas — o botão primário está SEMPRE visível, em qualquer tela.
  */
-// Paleta Mel & Carvão (espelha PortBranding sem depender de Compose).
-private const val COL_BG = 0xF20B0B10.toInt()        // carvão 95%
-private const val COL_ROW = 0x0D14131A                // linhas internas
-private const val COL_AMBER = 0xFFF2C14E.toInt()     // amarelo pelúcia
-private const val COL_AMBER_DIM = 0x66F2C14E.toInt()  // âmbar 40%
-private const val COL_AMBER_DEEP = 0xFF8C5A18.toInt()
-private const val COL_TEXT = 0xFFEDEFF4.toInt()
-private const val COL_TEXT_DIM = 0xFF9AA0AD.toInt()
-private const val COL_SECTION = 0xFF8A8F9E.toInt()
-private const val COL_TRACK_OFF = 0xFF2A2C36.toInt()
-private const val COL_THUMB_OFF = 0xFF6A6E7A.toInt()
-private const val COL_INK = 0xFF141006.toInt()       // texto sobre âmbar
+// ---------------------------------------------------------------------------
+// Paleta "Mel & Carvão" — LIDA DA FONTE PARAMÉTRICA (PortPalette/
+// PortBranding), como toda a UI do port: um rebrand de identidade troca um
+// único objeto de config e o painel acompanha. Compose Color é value class
+// pura — toArgb() funciona fora de composable. (Avaliação e1: deixa de ser
+// literal hardcoded.)
+// ---------------------------------------------------------------------------
+private val COL_SURFACE = PortPalette.surface.toArgb()      // carvão de superfície (diálogo)
+private val COL_TEXT = PortPalette.textPrimary.toArgb()     // texto primário (off-white quente)
+private val COL_TEXT2 = PortPalette.textSecondary.toArgb()  // texto secundário (subs, hints)
+private val COL_TEXT3 = PortPalette.textTertiary.toArgb()   // texto terciário (mono, metadados)
+private val COL_HAIRLINE = PortPalette.hairline.toArgb()    // branco a 8%
+private val COL_GHOST = PortPalette.ghostBorder.toArgb()    // contorno de chip não-selecionado
+private val COL_ACCENT = PortBranding.config.accent.toArgb()  // âmbar pelúcia (único acento)
+private val COL_ON_ACCENT = PortPalette.onAccent.toArgb()    // texto sobre âmbar
+private val COL_TRACK_OFF = 0x20FFFFFF   // literal do ToggleRow Compose (uncheckedTrack)
+private val COL_THUMB_OFF = PortPalette.textSecondary.toArgb()  // thumb do switch desligado
+
+// Raio (PortPalette.radius*): chips/linhas Sm=10, CTA Md=12, diálogo Lg=18.
+private const val RADIUS_SM = 10f
+private const val RADIUS_MD = 12f
+private const val RADIUS_LG = 18f
 
 private fun dp(ctx: Context, v: Float): Int =
     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, ctx.resources.displayMetrics).toInt()
@@ -65,15 +88,21 @@ private fun dp(ctx: Context, v: Float): Int =
 // Nota: tamanhos de texto são passados como SP cru em `textSize = Xf`
 // (TextView.setTextSize(Float) interpreta o valor como SP) — nunca como px
 // convertido via applyDimension, que seria escalado DUAS vezes pelo sistema.
+// Letter-spacing de TextView é em EM (fração do tamanho): 2.5sp a 10.5sp ≈
+// 0.24 — o mesmo rótulo em versalete do PortType.label.
 
-private fun cardBg(ctx: Context): GradientDrawable = GradientDrawable().apply {
+/** Fundo do diálogo: superfície carvão, raio Lg, SEM moldura (flat). */
+private fun dialogBg(ctx: Context): GradientDrawable = GradientDrawable().apply {
     shape = GradientDrawable.RECTANGLE
-    cornerRadius = dp(ctx, 26f).toFloat()
-    setColor(COL_BG)
-    setStroke(dp(ctx, 1f), COL_AMBER_DIM)
+    cornerRadius = dp(ctx, RADIUS_LG).toFloat()
+    setColor(COL_SURFACE)
 }
 
-private fun pill(ctx: Context, fill: Int, stroke: Int? = null, radius: Float = 14f): RippleDrawable {
+/**
+ * Pílula clicável (chips, CTA, botão fantasma): ripple branco suave sobre o
+ * fill pedido. O mesmo papel do portClickable + background da SettingsScreen.
+ */
+private fun pill(ctx: Context, fill: Int, stroke: Int? = null, radius: Float = RADIUS_SM): RippleDrawable {
     val bg = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = dp(ctx, radius).toFloat()
@@ -83,37 +112,85 @@ private fun pill(ctx: Context, fill: Int, stroke: Int? = null, radius: Float = 1
     return RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, null)
 }
 
-private fun rowBg(ctx: Context, radius: Float = 14f): GradientDrawable =
-    GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(ctx, radius).toFloat()
-        setColor(COL_ROW)
-    }
-
+/** Hairline entre linhas de uma seção (branco a 8%, 1dp) — sem caixas. */
 private fun hairline(ctx: Context): View = View(ctx).apply {
     layoutParams = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 1f)
-    ).apply { topMargin = dp(ctx, 16f); bottomMargin = dp(ctx, 4f) }
-    background = GradientDrawable().apply { setColor(0x1EFFFFFF) }
+    )
+    background = GradientDrawable().apply { setColor(COL_HAIRLINE) }
 }
 
-private fun sectionLabel(ctx: Context, text: String): TextView = TextView(ctx).apply {
-    this.text = text
-    setTextColor(COL_SECTION)
-    textSize = 11f
-    letterSpacing = 0.14f
+/** Respiro entre seções (30dp — mantém a hierarquia sem criar caixas). */
+private fun sectionGap(ctx: Context): View = View(ctx).apply {
+    layoutParams = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(ctx, 30f)
+    )
+}
+
+/**
+ * "LINHA DO MEL" — filete horizontal de 2dp no accent, ~28dp de largura
+ * (gesto nº 1 do design system: o acento é uma pincelada, não uma moldura).
+ * Separa a identidade (título) do conteúdo.
+ */
+private fun melLine(ctx: Context): View = View(ctx).apply {
+    layoutParams = LinearLayout.LayoutParams(dp(ctx, 28f), dp(ctx, 2f)).apply {
+        topMargin = dp(ctx, 12f)
+    }
+    background = GradientDrawable().apply { setColor(COL_ACCENT) }
+}
+
+/**
+ * Cabeçalho de seção: ponto âmbar de 4dp + rótulo em versalete (10.5sp
+ * semibold, letter-spacing 2.5sp, texto secundário) — idem SectionHeader.
+ */
+private fun sectionHeader(ctx: Context, text: String): LinearLayout {
+    val label = TextView(ctx).apply {
+        this.text = text.uppercase()
+        setTextColor(COL_TEXT2)
+        textSize = 10.5f
+        letterSpacing = 0.24f
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+    }
+    return LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(ctx, 4f) }
+        addView(View(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(ctx, 4f), dp(ctx, 4f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(COL_ACCENT)
+            }
+        })
+        addView(View(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(ctx, 8f), ViewGroup.LayoutParams.WRAP_CONTENT)
+        })
+        addView(label)
+    }
+}
+
+/** Rótulo de configuração dentro da seção (versalete) — idem SettingLabel. */
+private fun settingLabel(ctx: Context, text: String): TextView = TextView(ctx).apply {
+    this.text = text.uppercase()
+    setTextColor(COL_TEXT2)
+    textSize = 10.5f
+    letterSpacing = 0.24f
     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
     layoutParams = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-    ).apply { topMargin = dp(ctx, 10f); bottomMargin = dp(ctx, 2f) }
+    )
 }
 
-/** Adiciona uma linha-card com o respiro vertical padrão (8dp). */
-private fun addRow(container: LinearLayout, row: View) {
-    row.layoutParams = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-    ).apply { bottomMargin = dp(container.context, 8f) }
-    container.addView(row)
+/** Texto de rodapé de bloco (nota terciária) — idem rowSub (12sp/16sp). */
+private fun noteText(ctx: Context, text: String): TextView = TextView(ctx).apply {
+    this.text = text
+    setTextColor(COL_TEXT3)
+    textSize = 12f
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        lineHeight = dp(ctx, 16f)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +200,7 @@ private fun addRow(container: LinearLayout, row: View) {
 /**
  * @param initial  configurações atuais (carregadas na abertura)
  * @param onChange invocado a CADA mudança (ao vivo): quem hospeda aplica no
- *                 overlay/FPS/limite de FPS e decide quando persistir
+ *                 overlay/FPS/limite de FPS/tela cheia e decide quando persistir
  * @param onExitRequested chamado pelo atalho "Sair para a tela inicial"
  */
 class QuickSettingsDialog(
@@ -173,71 +250,105 @@ class QuickSettingsDialog(
         val c = context
         val root = LinearLayout(c).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(c, 22f), dp(c, 18f), dp(c, 22f), dp(c, 12f))
-            background = cardBg(c)
+            setPadding(dp(c, 22f), dp(c, 20f), dp(c, 22f), dp(c, 16f))
+            background = dialogBg(c)
         }
 
-        // ---- Cabeçalho (fixo) ----------------------------------------------
+        // ---- Cabeçalho (fixo): título + linha do mel ----------------------
         root.addView(TextView(c).apply {
-            text = "AJUSTES RÁPIDOS"
-            setTextColor(COL_AMBER)
-            textSize = 15f
-            letterSpacing = 0.10f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            text = "Ajustes rápidos"
+            setTextColor(COL_TEXT)
+            textSize = 22f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         })
         root.addView(TextView(c).apply {
             text = "Mudanças aplicam na hora, o jogo segue rodando"
-            setTextColor(COL_TEXT_DIM)
+            setTextColor(COL_TEXT2)
             textSize = 12f
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(c, 4f); bottomMargin = dp(c, 4f) }
+            ).apply { topMargin = dp(c, 2f) }
         })
+        root.addView(melLine(c))
 
         // ---- Miolo rolável ---------------------------------------------------
         val body = LinearLayout(c).apply {
             orientation = LinearLayout.VERTICAL
         }
-        body.addView(hairline(c))
+        body.addView(View(c).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 18f)
+            )
+        })
 
-        // Seção: Controles
-        body.addView(sectionLabel(c, "CONTROLES"))
-        addRow(body, switchRow(
+        // ============================ TELA =============================
+        body.addView(sectionHeader(c, "TELA"))
+        body.addView(toggleRow(
+            c, "Tela cheia",
+            "Preenche toda a tela do aparelho (estica além de 16:9), como " +
+                "um jogo mobile — sem as barras pretas",
+            current.fullscreenStretch
+        ) { checked -> mutate(current.copy(fullscreenStretch = checked)) })
+        body.addView(hairline(c))
+        body.addView(toggleRow(
+            c, "Contador de FPS",
+            "Quadros por segundo reais do motor, sobre o jogo",
+            current.showFpsCounter
+        ) { checked -> mutate(current.copy(showFpsCounter = checked)) })
+
+        body.addView(sectionGap(c))
+
+        // ========================== CONTROLES ==========================
+        body.addView(sectionHeader(c, "CONTROLES"))
+        body.addView(toggleRow(
             c, "Controles na tela", "Botões virtuais sobre o jogo",
             current.showOverlayControls
         ) { checked -> mutate(current.copy(showOverlayControls = checked)) })
-        addRow(body, sliderRow(
+        body.addView(hairline(c))
+        body.addView(sliderRow(
             c, "Opacidade do overlay",
             (current.overlayOpacity * 100).roundToInt().coerceIn(20, 100),
             20, 100
         ) { pct -> mutate(current.copy(overlayOpacity = pct / 100f)) })
-        addRow(body, sliderRow(
+        body.addView(hairline(c))
+        body.addView(sliderRow(
             c, "Tamanho dos controles",
             (current.overlayScale * 100).roundToInt().coerceIn(70, 160),
             70, 160
         ) { pct -> mutate(current.copy(overlayScale = pct / 100f)) })
-        addRow(body, switchRow(
+        body.addView(hairline(c))
+        body.addView(toggleRow(
             c, "Vibração", "Feedback tátil dos controles virtuais",
             current.hapticFeedback
         ) { checked -> mutate(current.copy(hapticFeedback = checked)) })
 
-        // Seção: Desempenho
-        body.addView(sectionLabel(c, "DESEMPENHO"))
-        addRow(body, fpsLimitRow(c))
-        addRow(body, switchRow(
-            c, "Contador de FPS", "Quadros por segundo reais do motor, sobre o jogo",
-            current.showFpsCounter
-        ) { checked -> mutate(current.copy(showFpsCounter = checked)) })
+        body.addView(sectionGap(c))
+
+        // ========================= DESEMPENHO ==========================
+        body.addView(sectionHeader(c, "DESEMPENHO"))
+        body.addView(settingLabel(c, "Limite de FPS"))
+        body.addView(View(c).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 10f)
+            )
+        })
+        body.addView(fpsLimitRow(c))
+        body.addView(noteText(
+            c, "Aplica na hora — também vale nas Configurações do app"
+        ))
+        body.addView(View(c).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 18f)
+            )
+        })
         // M4.39: resolução/aniso exigem reiniciar (SceneScale resolve uma vez
         // no boot) — mostra o valor ativo e aponta para as Configurações em
         // vez de oferecer um controle que não aplicaria ao vivo.
-        addRow(body, TextView(c).apply {
-            text = "Resolução interna: ${current.resScale.short} · Aniso ${current.aniso.label} — " +
+        body.addView(noteText(
+            c, "Resolução interna: ${current.resScale.short} · Aniso ${current.aniso.label} — " +
                 "para trocar, volte à tela inicial → Configurações → Desempenho " +
                 "(vale no próximo início do jogo)."
-            setTextColor(COL_TEXT_DIM)
-            textSize = 12f
-        })
+        ))
 
         root.addView(ScrollView(c).apply {
             isFillViewport = false
@@ -250,17 +361,19 @@ class QuickSettingsDialog(
         })
 
         // ---- Rodapé de ações (fixo — sempre visível) ------------------------
+        // ALVO ÚNICO de peso do diálogo (gesto nº 3 do design system): o CTA
+        // âmbar sólido "Voltar ao jogo".
         root.addView(TextView(c).apply {
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 50f)
-            ).apply { topMargin = dp(c, 10f) }
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 48f)
+            ).apply { topMargin = dp(c, 14f) }
             text = "Voltar ao jogo"
             gravity = Gravity.CENTER
-            setTextColor(COL_INK)
-            textSize = 14f
-            letterSpacing = 0.02f
+            setTextColor(COL_ON_ACCENT)
+            textSize = 14.5f
+            letterSpacing = 0.03f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            background = pill(c, COL_AMBER)
+            background = pill(c, COL_ACCENT, radius = RADIUS_MD)
             setOnClickListener { dismiss() }
         })
         root.addView(LinearLayout(c).apply {
@@ -268,25 +381,26 @@ class QuickSettingsDialog(
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            ).apply { topMargin = dp(c, 10f) }
             addView(TextView(c).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
                 )
                 text = "4 dedos em qualquer lugar reabrem este painel"
-                setTextColor(COL_TEXT_DIM)
-                textSize = 11f
+                setTextColor(COL_TEXT3)
+                textSize = 10.5f
                 maxLines = 2
             })
             addView(TextView(c).apply {
                 text = "Sair para a tela inicial"
-                setTextColor(COL_AMBER_DIM)
-                textSize = 12f
+                setTextColor(COL_TEXT2)
+                textSize = 12.5f
+                letterSpacing = 0.03f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 minHeight = dp(c, 48f)
                 gravity = Gravity.CENTER
-                setPadding(dp(c, 10f), dp(c, 10f), dp(c, 10f), dp(c, 10f))
-                background = pill(c, Color.TRANSPARENT, null, radius = 12f)
+                setPadding(dp(c, 16f), dp(c, 12f), dp(c, 16f), dp(c, 12f))
+                background = pill(c, Color.TRANSPARENT, COL_GHOST, radius = RADIUS_MD)
                 setOnClickListener {
                     dismiss()
                     onExitRequested()
@@ -297,57 +411,77 @@ class QuickSettingsDialog(
         setContentView(root)
     }
 
-    // ---- Linhas reutilizáveis ---------------------------------------------
+    // ---- Linhas reutilizáveis (espelham ToggleRow/SliderRow da
+    // SettingsScreen — linha inteira clicável, hairline separa, sem caixa) ----
 
-    private fun switchRow(
+    private fun toggleRow(
         c: Context,
         label: String,
         subtitle: String,
         checked: Boolean,
         onUpdate: (Boolean) -> Unit,
     ): LinearLayout {
-        val labelView = TextView(c).apply {
-            text = label
-            setTextColor(COL_TEXT)
-            textSize = 14f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }
-        val subtitleView = TextView(c).apply {
-            text = subtitle
-            setTextColor(COL_TEXT_DIM)
-            textSize = 12f
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(c, 2f) }
-        }
         val switch = Switch(c).apply {
             id = View.generateViewId()
             isChecked = checked
+            // Cores do ToggleRow do Compose: track âmbar quando ligado (com
+            // thumb "on accent"), track branco 12% + thumb secundário quando
+            // desligado.
             thumbTintList = ColorStateList(
                 arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(COL_AMBER, COL_THUMB_OFF)
+                intArrayOf(COL_ON_ACCENT, COL_THUMB_OFF)
             )
             trackTintList = ColorStateList(
                 arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(COL_AMBER_DIM, COL_TRACK_OFF)
+                intArrayOf(COL_ACCENT, COL_TRACK_OFF)
             )
-            contentDescription = label
+            // TalkBack: o Switch é o NÓ ÚNICO da linha (equivalente do
+            // merge + Role.Switch do Compose) — label e subtítulo fundem no
+            // contentDescription e o ESTADO ligado/desligado é anunciado
+            // pelo próprio widget.
+            contentDescription = "$label — $subtitle"
             setOnCheckedChangeListener { _, value -> onUpdate(value) }
         }
-        labelView.labelFor = switch.id
-        return LinearLayout(c).apply {
+        val row = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(c, 14f), dp(c, 8f), dp(c, 14f), dp(c, 8f))
-            background = rowBg(c)
+            minHeight = dp(c, 56f)
+            setPadding(0, dp(c, 8f), 0, dp(c, 8f))
+            // Linha INTEIRA clicável (idem portClickable do ToggleRow): alvo
+            // de toque confortável em qualquer densidade. Haptic idem
+            // (HapticFeedbackType.LongPress do portClickable).
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                switch.toggle()
+            }
+            // A travessia de acessibilidade passa SÓ pelo switch: sem isto o
+            // TalkBack leria a linha ("toque duplo para ativar", SEM estado)
+            // E o switch separado — dois nós, nenhum com o estado certo.
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             addView(LinearLayout(c).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                addView(labelView)
-                addView(subtitleView)
+                addView(TextView(c).apply {
+                    text = label
+                    setTextColor(COL_TEXT)
+                    textSize = 15f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    // Fundido no contentDescription do switch (acima).
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                })
+                addView(TextView(c).apply {
+                    text = subtitle
+                    setTextColor(COL_TEXT2)
+                    textSize = 12f
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dp(c, 2f) }
+                })
             })
             addView(switch)
         }
+        return row
     }
 
     private fun sliderRow(
@@ -360,16 +494,20 @@ class QuickSettingsDialog(
     ): LinearLayout {
         val valueView = TextView(c).apply {
             text = "$initialPct%"
-            setTextColor(COL_AMBER)
-            textSize = 13f
+            setTextColor(COL_ACCENT)
+            textSize = 12f
             typeface = Typeface.MONOSPACE
+            // O valor muda a cada tick do arrasto: fora da travessia do
+            // TalkBack (o SeekBar abaixo anuncia o progresso por conta).
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         val header = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             addView(TextView(c).apply {
                 text = label
                 setTextColor(COL_TEXT)
-                textSize = 14f
+                textSize = 15f
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
@@ -379,9 +517,9 @@ class QuickSettingsDialog(
             min = minPct
             max = maxPct
             progress = initialPct
-            progressTintList = ColorStateList.valueOf(COL_AMBER)
+            progressTintList = ColorStateList.valueOf(COL_ACCENT)
             progressBackgroundTintList = ColorStateList.valueOf(COL_TRACK_OFF)
-            thumbTintList = ColorStateList.valueOf(COL_AMBER)
+            thumbTintList = ColorStateList.valueOf(COL_ACCENT)
             contentDescription = label
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
@@ -396,36 +534,41 @@ class QuickSettingsDialog(
         }
         return LinearLayout(c).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(c, 14f), dp(c, 10f), dp(c, 14f), dp(c, 8f))
-            background = rowBg(c)
+            setPadding(0, dp(c, 12f), 0, dp(c, 10f))
             addView(header)
             addView(seek)
         }
     }
 
     /**
-     * Limite de FPS — chips de seleção única (30/40/60/90/120/∞), alvo de toque
-     * de 48dp. A escolha aplica AO VIVO via cvar fps_cap (JNI): o limiter do
+     * Limite de FPS — chips de seleção única (idem ChoiceChipsRow:
+     * rolagem horizontal, nunca corta; alvo de 48dp; selecionado = âmbar
+     * sólido + texto "on accent", não-selecionado = contorno fantasma).
+     * A escolha aplica AO VIVO via cvar fps_cap (JNI): o limiter do
      * guest e o pacing do present thread leem o valor por frame — nada de
      * reiniciar o jogo. Persiste junto com o resto do painel (mesma chave
      * das Configurações, gravada no fechamento → restuff.toml no próximo
      * boot).
      */
-    private fun fpsLimitRow(c: Context): LinearLayout {
+    private fun fpsLimitRow(c: Context): HorizontalScrollView {
         val chips = ArrayList<Pair<TextView, FpsLimitOption>>()
 
         fun repaint() {
             for ((chip, opt) in chips) {
                 val selected = opt == current.fpsLimit
                 (chip.background as? RippleDrawable)?.let { ripple ->
-                    (ripple.getDrawable(0) as? GradientDrawable)?.setColor(
-                        if (selected) COL_AMBER else Color.TRANSPARENT
-                    )
+                    (ripple.getDrawable(0) as? GradientDrawable)?.apply {
+                        setColor(if (selected) COL_ACCENT else Color.TRANSPARENT)
+                        setStroke(
+                            dp(c, 1f),
+                            if (selected) Color.TRANSPARENT else COL_GHOST
+                        )
+                    }
                 }
-                chip.setTextColor(if (selected) COL_INK else COL_TEXT_DIM)
-                chip.typeface = Typeface.create(
-                    "sans-serif-medium", if (selected) Typeface.BOLD else Typeface.NORMAL
-                )
+                chip.setTextColor(if (selected) COL_ON_ACCENT else COL_TEXT2)
+                // SemiBold em ambos os estados (idem PortType.chip): quem
+                // distingue seleção é o fundo âmbar + cor do texto.
+                chip.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 chip.contentDescription = if (opt == FpsLimitOption.UNLIMITED) {
                     "Limite de FPS ilimitado"
                 } else {
@@ -439,20 +582,19 @@ class QuickSettingsDialog(
 
         val chipsRow = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(c, 8f) }
         }
         for (opt in FpsLimitOption.entries) {
             val chip = TextView(c).apply {
-                layoutParams = LinearLayout.LayoutParams(0, dp(c, 48f), 1f).apply {
-                    marginEnd = dp(c, 8f)
-                }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(c, 48f)
+                ).apply { marginEnd = dp(c, 8f) }
                 text = if (opt == FpsLimitOption.UNLIMITED) "∞" else opt.label
                 gravity = Gravity.CENTER
-                textSize = 14f
+                textSize = 12.5f
+                letterSpacing = 0.03f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                background = pill(c, Color.TRANSPARENT, COL_AMBER_DIM, radius = 12f)
+                setPadding(dp(c, 18f), 0, dp(c, 18f), 0)
+                background = pill(c, Color.TRANSPARENT, COL_GHOST, radius = RADIUS_SM)
                 setOnClickListener {
                     if (current.fpsLimit != opt) {
                         mutate(current.copy(fpsLimit = opt))
@@ -460,33 +602,19 @@ class QuickSettingsDialog(
                     }
                 }
             }
-            if (opt == FpsLimitOption.entries.last()) {
-                (chip.layoutParams as LinearLayout.LayoutParams).marginEnd = 0
-            }
             chips.add(chip to opt)
             chipsRow.addView(chip)
         }
         repaint()
 
-        return LinearLayout(c).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(c, 14f), dp(c, 10f), dp(c, 14f), dp(c, 8f))
-            background = rowBg(c)
-            addView(TextView(c).apply {
-                text = "Limite de FPS"
-                setTextColor(COL_TEXT)
-                textSize = 14f
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            })
-            addView(TextView(c).apply {
-                text = "Aplica na hora — também vale nas Configurações do app"
-                setTextColor(COL_TEXT_DIM)
-                textSize = 12f
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = dp(c, 2f) }
-            })
-            addView(chipsRow)
+        return HorizontalScrollView(c).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            addView(chipsRow, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
         }
     }
 }
@@ -497,7 +625,9 @@ class QuickSettingsDialog(
 
 /**
  * "Deseja voltar para a tela inicial?" — o jogo é encerrado (Activity
- * finalizada) e o usuário retorna ao launcher do port.
+ * finalizada) e o usuário retorna ao launcher do port. Mesma gramática flat
+ * do painel de ajustes: superfície carvão raio Lg, linha do mel, CTA âmbar
+ * como alvo único (a ação destrutiva fica no sólido; continuar é fantasma).
  */
 class ExitConfirmDialog(
     context: Context,
@@ -532,25 +662,28 @@ class ExitConfirmDialog(
         val root = LinearLayout(c).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(c, 24f), dp(c, 22f), dp(c, 24f), dp(c, 20f))
-            background = cardBg(c)
+            background = dialogBg(c)
         }
 
         root.addView(TextView(c).apply {
             text = "Voltar para a tela inicial?"
             setTextColor(COL_TEXT)
-            textSize = 16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            // Mesmo token do título do painel (PortType.titleScreen: 22sp
+            // Medium) — avaliação e1: fora da escala 18sp Bold.
+            textSize = 22f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         })
+        root.addView(melLine(c))
         root.addView(TextView(c).apply {
             text = "O jogo será encerrado e você voltará ao menu do port. O progresso não salvo será perdido."
-            setTextColor(COL_TEXT_DIM)
+            setTextColor(COL_TEXT2)
             textSize = 13f
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                lineHeight = dp(c, 20f)
+                lineHeight = dp(c, 18f)  // PortType.caption: 13sp/18sp
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(c, 10f) }
+            ).apply { topMargin = dp(c, 12f) }
         })
 
         root.addView(LinearLayout(c).apply {
@@ -558,28 +691,30 @@ class ExitConfirmDialog(
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(c, 22f) }
-            // Continuar jogando (contorno âmbar) — fecha e segue.
+            // Continuar jogando (fantasma) — fecha e segue.
             addView(TextView(c).apply {
                 layoutParams = LinearLayout.LayoutParams(0, dp(c, 48f), 1f).apply {
                     marginEnd = dp(c, 10f)
                 }
                 text = "Continuar jogando"
                 gravity = Gravity.CENTER
-                setTextColor(COL_AMBER)
-                textSize = 13f
+                setTextColor(COL_TEXT2)
+                textSize = 12.5f
+                letterSpacing = 0.03f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                background = pill(c, Color.TRANSPARENT, COL_AMBER_DIM)
+                background = pill(c, Color.TRANSPARENT, COL_GHOST, radius = RADIUS_MD)
                 setOnClickListener { dismiss() }
             })
-            // Voltar (âmbar sólido) — sai para o launcher.
+            // Voltar (âmbar sólido — alvo único) — sai para o launcher.
             addView(TextView(c).apply {
                 layoutParams = LinearLayout.LayoutParams(0, dp(c, 48f), 1f)
                 text = "Voltar"
                 gravity = Gravity.CENTER
-                setTextColor(COL_INK)
-                textSize = 13f
+                setTextColor(COL_ON_ACCENT)
+                textSize = 12.5f
+                letterSpacing = 0.03f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                background = pill(c, COL_AMBER)
+                background = pill(c, COL_ACCENT, radius = RADIUS_MD)
                 setOnClickListener {
                     dismiss()
                     onExit()

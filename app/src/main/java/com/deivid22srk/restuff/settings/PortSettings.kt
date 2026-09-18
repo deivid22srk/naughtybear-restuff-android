@@ -20,6 +20,9 @@
  *                       em /storage/emulated/0/Naughty Bear ReStuff/logs
  *   showOverlayControls / overlayOpacity / overlayScale / hapticFeedback
  *                     → VirtualGamepadView (gamepad virtual SDL sobre o jogo)
+ *   fullscreenStretch → cvar "restuff_fullscreen_stretch" (overlay do
+ *                       presenter Vulkan: saída cobre a tela inteira,
+ *                       esticada como um jogo mobile — sem letterbox 16:9)
  *   particlesEnabled / reduceMotionOverride → efeitos da tela inicial
  *
  * A ponte Java→motor vive em GameActivity.getArguments() (argv do SDL_main +
@@ -126,6 +129,12 @@ data class PortSettings(
     // e calcula a taxa no próprio overlay — nada de estimativa por
     // Choreographer (que mede o vsync do painel, não o jogo).
     val showFpsCounter: Boolean = false,
+    // "Tela cheia" (feat/ui-painel-fullscreen): estica a saída do jogo para
+    // cobrir a tela INTEIRA do aparelho (aspect real, ex. 20:9) em vez do
+    // letterbox 16:9 com barras — o visual de um jogo mobile nativo. Live:
+    // o cvar restuff_fullscreen_stretch é lido a cada paint pelo presenter
+    // (toggle aplica no próximo quadro, também no painel de 4 dedos).
+    val fullscreenStretch: Boolean = false,
     // Motor ReStuff
     val unlockAllCheat: Boolean = false,        // unlock_all (cheats)
     val unlock60Fps: Boolean = true,            // RESTUFF_FPS60 (unlock vblank)
@@ -174,6 +183,7 @@ class PortSettingsRepository(private val appContext: Context) {
             sustainedPerf = prefs.getBoolean(K_SUSTAINED, true),
             dynamicRes = prefs.getBoolean(K_DRS, true),
             showFpsCounter = prefs.getBoolean(K_SHOW_FPS, false),
+            fullscreenStretch = prefs.getBoolean(K_FULLSCREEN, false),
             unlockAllCheat = prefs.getBoolean(K_UNLOCK_ALL, false),
             unlock60Fps = prefs.getBoolean(K_UNLOCK_60FPS, true),
             textureMods = prefs.getBoolean(K_TEX_MODS, false),
@@ -196,6 +206,7 @@ class PortSettingsRepository(private val appContext: Context) {
             .putBoolean(K_SUSTAINED, s.sustainedPerf)
             .putBoolean(K_DRS, s.dynamicRes)
             .putBoolean(K_SHOW_FPS, s.showFpsCounter)
+            .putBoolean(K_FULLSCREEN, s.fullscreenStretch)
             .putBoolean(K_UNLOCK_ALL, s.unlockAllCheat)
             .putBoolean(K_UNLOCK_60FPS, s.unlock60Fps)
             .putBoolean(K_TEX_MODS, s.textureMods)
@@ -228,6 +239,7 @@ class PortSettingsRepository(private val appContext: Context) {
         const val K_SUSTAINED = "sustained_perf"
         const val K_DRS = "dynamic_res"
         const val K_SHOW_FPS = "show_fps_counter"
+        const val K_FULLSCREEN = "fullscreen_stretch"
         const val K_UNLOCK_ALL = "restuff_unlock_all"
         const val K_UNLOCK_60FPS = "restuff_unlock_60fps"
         const val K_TEX_MODS = "restuff_tex_mods"
